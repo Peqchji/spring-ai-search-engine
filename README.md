@@ -14,7 +14,7 @@ Unlike simple "chat with PDF" wrappers, this system is designed for scale. It de
 
 ```mermaid
 graph TD
-    User[User Query] -->|REST/gRPC| Gateway[API Gateway]
+    User[User Query] -->|REST| Gateway[API Gateway]
     Gateway --> Search[Search Service]
     Gateway --> Ingest[Ingestion Service]
     
@@ -87,7 +87,3 @@ kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/infra/  # Deploys Kafka & Vector DB
 kubectl apply -f k8s/apps/   # Deploys Spring Boot Apps
 ```
-
-## 📄 License
-
-MIT
