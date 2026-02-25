@@ -26,6 +26,7 @@ public class KafkaDocumentPublisher {
                     "content", chunk.getText(),
                     "metadata", chunk.getMetadata()
             );
+            
             kafkaTemplate.send(TOPIC, chunk.getId(), payload);
         }
         log.info("Published {} chunks to topic '{}'", chunks.size(), TOPIC);

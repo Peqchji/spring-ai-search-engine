@@ -23,6 +23,7 @@ public class EmbeddingService {
      */
     public void embedAndStore(List<Document> chunks) {
         vectorStore.add(chunks);
+        
         log.info("Successfully embedded and stored {} chunks in vector store", chunks.size());
     }
 }

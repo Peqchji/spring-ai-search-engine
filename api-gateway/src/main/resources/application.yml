@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      routes:
+        # ── Ingestion Service ──
+        - id: ingestion-service
+          uri: ${INGESTION_SERVICE_URL:http://localhost:8085}
+          predicates:
+            - Path=/ingest/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: ingestionCB
+                fallbackUri: forward:/fallback
+
+        # ── Search Orchestrator (future) ──
+        - id: search-orchestrator
+          uri: ${SEARCH_ORCHESTRATOR_URL:http://localhost:8081}
+          predicates:
+            - Path=/search/**
+          filters:
+            - name: CircuitBreaker
+              args:
+                name: searchCB
+                fallbackUri: forward:/fallback
+
+      default-filters:
+        - name: RequestRateLimiter
+          args:
+            redis-rate-limiter.replenishRate: 10
+            redis-rate-limiter.burstCapacity: 20
+
+server:
+  port: ${GATEWAY_PORT:8080}
+
+# Actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,gateway
+  endpoint:
+    gateway:
+      enabled: true
