@@ -1,109 +1,78 @@
 package com.search.ai.ingestion.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
-import com.search.ai.ingestion.model.OutboxEvent;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
-import com.search.ai.ingestion.repository.OutboxRepository;
-import com.search.ai.shared.util.constants.AppConstants;
-import com.search.ai.shared.model.DocumentEventDTO;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.ai.document.Document;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class IngestionFacade {
 
-    private final DocumentLoaderService documentLoaderService;
-    private final ChunkingService chunkingService;
-    private final EmbeddingService embeddingService;
+        private final IngestionMetadataRepository metadataRepository;
+        private final AsyncIngestionWorker asyncIngestionWorker;
 
-    private final IngestionMetadataRepository metadataRepository;
-    private final OutboxRepository outboxRepository;
-    private final ObjectMapper objectMapper;
+        /**
+         * Orchestrates the full ingestion pipeline using the Asynchronous Job Pattern.
+         * The file is spooled to disk, a job record is defined, and the heavy Tika
+         * parsing,
+         * embedding, and database storing is offloaded to a background thread.
+         */
+        @Transactional
+        public IngestionResult ingest(MultipartFile file) {
+                log.info("Accepting file for ingestion: {} ({})", file.getOriginalFilename(), file.getContentType());
 
-    /**
-     * Orchestrates the full ingestion pipeline using the Outbox Pattern.
-     * Consistency is guaranteed between DB state and eventual Kafka message.
-     */
-    @Transactional
-    public IngestionResult ingest(MultipartFile file) {
-        log.info("Ingesting file: {} ({})", file.getOriginalFilename(), file.getContentType());
+                try {
+                        // 1. Spool file to disk (Zero-Copy) to avoid RAM exhaustion
+                        Path tempFile = Files.createTempFile("async-ingest-", "-" + file.getOriginalFilename());
+                        file.transferTo(tempFile);
+                        log.info("Spooled {} bytes to disk: {}", file.getSize(), tempFile);
 
-        // 1. Load — parse file into documents
-        List<Document> documents = documentLoaderService.load(file);
+                        // 2. Create tracking record (PENDING)
+                        IngestionMetadata metadata = IngestionMetadata.builder()
+                                        .filename(file.getOriginalFilename())
+                                        .contentType(file.getContentType())
+                                        .documentCount(0) // Known later
+                                        .chunkCount(0) // Known later
+                                        .ingestedAt(LocalDateTime.now())
+                                        .status(IngestionStatus.PENDING)
+                                        .build();
 
-        // 2. Chunk — split into overlapping chunks
-        List<Document> chunks = chunkingService.chunk(documents);
+                        metadata = metadataRepository.save(metadata);
 
-        // 3. Embed + Store — generate embeddings and store in MongoDB
-        // MongoDB is the primary Vector Store for semantic search.
-        embeddingService.embedAndStore(chunks);
-        log.info("Embedded and stored {} chunk(s) in MongoDB", chunks.size());
+                        // 3. Dispatch Background Job
+                        asyncIngestionWorker.processIngestion(metadata.getId(), tempFile, file.getOriginalFilename());
 
-        // 4. Persistence — Save metadata to MongoDB
-        IngestionMetadata metadata = IngestionMetadata.builder()
-                .filename(file.getOriginalFilename())
-                .contentType(file.getContentType())
-                .documentCount(documents.size())
-                .chunkCount(chunks.size())
-                .ingestedAt(LocalDateTime.now())
-                .status(IngestionStatus.COMPLETED)
-                .build();
+                        // 4. Return immediately to the client
+                        return new IngestionResult(
+                                        metadata.getId(),
+                                        file.getOriginalFilename(),
+                                        "PENDING",
+                                        "Ingestion job started in the background.");
 
-        metadata = metadataRepository.save(metadata);
-
-        // 5. Outbox — Save event to be picked up by Relay
-        saveToOutbox(metadata, chunks);
-
-        return new IngestionResult(
-                file.getOriginalFilename(),
-                documents.size(),
-                chunks.size());
-    }
-
-    private void saveToOutbox(IngestionMetadata metadata, List<Document> chunks) {
-        try {
-            List<DocumentEventDTO> dtos = chunks.stream()
-                    .map(chunk -> DocumentEventDTO.builder()
-                            .id(chunk.getId())
-                            .content(chunk.getText())
-                            .metadata(chunk.getMetadata())
-                            .build())
-                    .toList();
-
-            OutboxEvent event = OutboxEvent.builder()
-                    .aggregateId(metadata.getId())
-                    .type(AppConstants.EVENT_TYPE_INGESTION_COMPLETED)
-                    .payload(objectMapper.writeValueAsString(dtos))
-                    .createdAt(LocalDateTime.now())
-                    .processed(false)
-                    .build();
-
-            outboxRepository.save(event);
-
-            log.info("Saved ingestion event to outbox for aggregate ID: {}", metadata.getId());
-        } catch (JsonProcessingException e) {
-            log.error("Failed to serialize chunks for outbox", e);
-            throw new RuntimeException("Outbox serialization error", e);
+                } catch (IOException e) {
+                        log.error("Failed to spool upload to disk for async processing", e);
+                        
+                        throw new RuntimeException("Async I/O Error", e);
+                }
         }
-    }
 
-    public record IngestionResult(
-            String filename,
-            int documentsLoaded,
-            int chunksCreated) {
-    }
+        public record IngestionResult(
+                        String id,
+                        String filename,
+                        String status,
+                        String message) {
+        }
 }
