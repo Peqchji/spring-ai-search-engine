@@ -1,20 +1,20 @@
 # AGENTIC.md — Agentic Search Pipeline
 
-This document describes the agentic components of the Spring AI Search Engine — how the system uses an LLM not only for answer generation, but also for active query understanding and reranking at each stage of the search pipeline.
+This document describes the agentic design of the Spring AI Search Engine — how LLM agents are embedded at multiple stages of a fully event-driven Kafka pipeline, each running as an independent microservice.
 
 ---
 
 ## What Makes This "Agentic"?
 
-A simple RAG system retrieves documents and feeds them to an LLM once. This system uses an LLM at **three separate stages**, each with a distinct role:
+A simple RAG system retrieves documents and calls an LLM once. This system uses an LLM at **three independent service stages**, each with a distinct reasoning role:
 
-| Stage | Agent Role | LLM Task |
+| Service | Agent Role | LLM Task |
 |---|---|---|
-| 1 — Query Expansion | Planning | Rewrite and expand the user query before search |
-| 3 — Reranking | Evaluation | Score and rank retrieved candidates by relevance |
-| 4 — Answer Generation | Synthesis | Produce a grounded answer from top-N documents |
+| `query-expansion-service` | Planning | Rewrite and expand the user query before search |
+| `reranker-service` | Evaluation | Score and rank retrieved candidates by relevance |
+| `answer-generation-service` | Synthesis | Produce a grounded answer from top-N documents |
 
-This creates a **pipeline where the LLM actively shapes both the retrieval and the response** — not just generation.
+All three are decoupled from each other and from the retrieval layer — connected only via Kafka topics, orchestrated by `search-orchestrator`.
 
 ---
 
@@ -22,395 +22,513 @@ This creates a **pipeline where the LLM actively shapes both the retrieval and t
 
 ```mermaid
 flowchart TD
-    Q([User Query]) --> S1
+    Q([User Query]) --> ORCH
 
-    S1["Stage 1 · QueryExpansionService\n🧠 LLM Agent\nExpand query into 2–3 variants"]
-    S1 -->|"expanded variants"| S2
+    ORCH[search-orchestrator\nCorrelation · State · Routing]
 
-    subgraph S2["Stage 2 · HybridRetrievalService\n⚙️ Deterministic"]
-        V[Dense · Vector Search]
-        BM[Sparse · BM25 / FTS]
-        RRF[RRF Merge]
-        V --> RRF
-        BM --> RRF
-    end
+    ORCH -->|query.expand| S1["query-expansion-service\n🧠 LLM Agent\nExpand query into variants"]
+    S1 -->|query.expanded| ORCH
 
-    S2 -->|"top-20 candidates"| S3
+    ORCH -->|retrieval.request| S2["hybrid-retrieval-service\n⚙️ Deterministic\nVector + BM25 + RRF"]
+    S2 -->|retrieval.results| ORCH
 
-    S3["Stage 3 · LLMReranker\n🏆 LLM Agent — KEEP as-is\nScore each doc · return top-5"]
-    S3 -->|"top-5 reranked docs"| S4
+    ORCH -->|rerank.request| S3["reranker-service\n🏆 LLM Agent — KEEP\nScore candidates · return top-5"]
+    S3 -->|rerank.results| ORCH
 
-    S4["Stage 4 · AnswerGenerationService\n✍️ LLM Agent\nRAG generation"]
-    S4 --> Out([Final Response\nanswer + citations])
+    ORCH -->|answer.request| S4["answer-generation-service\n✍️ LLM Agent\nRAG generation"]
+    S4 -->|answer.results| ORCH
+
+    ORCH --> R([Final Response])
 ```
 
 ---
 
-## Stage 1: Query Expansion
+## Kafka Topic Contracts
 
-### Purpose
+All events carry a `correlationId` so the orchestrator can match responses back to the originating user request.
 
-User queries are often short, ambiguous, or use different vocabulary than the indexed documents. Query expansion rewrites the original query into multiple variants to improve **recall** in retrieval — ensuring we don't miss relevant documents just because words don't match exactly.
+### `query.expand`
+```json
+{
+  "correlationId": "uuid",
+  "query": "can I get money back"
+}
+```
+
+### `query.expanded`
+```json
+{
+  "correlationId": "uuid",
+  "originalQuery": "can I get money back",
+  "variants": ["can I get money back", "refund policy", "return and reimbursement process"]
+}
+```
+
+### `retrieval.request`
+```json
+{
+  "correlationId": "uuid",
+  "originalQuery": "can I get money back",
+  "variants": ["can I get money back", "refund policy", "return and reimbursement process"],
+  "topK": 20
+}
+```
+
+### `retrieval.results`
+```json
+{
+  "correlationId": "uuid",
+  "candidates": [
+    { "id": "doc-uuid", "content": "...", "score": 0.91, "source": "vector" },
+    { "id": "doc-uuid", "content": "...", "score": 0.87, "source": "bm25" }
+  ]
+}
+```
+
+### `rerank.request`
+```json
+{
+  "correlationId": "uuid",
+  "query": "can I get money back",
+  "candidates": [ ...20 documents... ]
+}
+```
+
+### `rerank.results`
+```json
+{
+  "correlationId": "uuid",
+  "ranked": [
+    { "id": "doc-uuid", "content": "...", "llmScore": 9.2 },
+    { "id": "doc-uuid", "content": "...", "llmScore": 7.8 }
+  ]
+}
+```
+
+### `answer.request`
+```json
+{
+  "correlationId": "uuid",
+  "query": "can I get money back",
+  "context": [ ...top-5 ranked documents... ]
+}
+```
+
+### `answer.results`
+```json
+{
+  "correlationId": "uuid",
+  "answer": "Yes, you can request a refund within 30 days...",
+  "sources": [ { "id": "doc-uuid", "excerpt": "..." } ]
+}
+```
+
+---
+
+## search-orchestrator
+
+### Responsibility
+
+The orchestrator is the sole entry point for search. It drives the pipeline by publishing to each stage's input topic in sequence and waiting for the corresponding result topic, matched by `correlationId`.
+
+It does **not** perform any LLM or retrieval work itself — it is a pure coordinator.
+
+### State Machine per Request
+
+```mermaid
+stateDiagram-v2
+    [*] --> EXPANDING: POST /search received\npublish query.expand
+    EXPANDING --> RETRIEVING: query.expanded received\npublish retrieval.request
+    RETRIEVING --> RERANKING: retrieval.results received\npublish rerank.request
+    RERANKING --> GENERATING: rerank.results received\npublish answer.request
+    GENERATING --> DONE: answer.results received\nreturn response to user
+    EXPANDING --> FAILED: timeout
+    RETRIEVING --> FAILED: timeout
+    RERANKING --> FAILED: timeout / fallback to RRF order
+    GENERATING --> FAILED: timeout
+    DONE --> [*]
+    FAILED --> [*]
+```
 
 ### Implementation
 
-**Class:** `QueryExpansionService`
-
 ```java
 @Service
-public class QueryExpansionService {
+public class PipelineOrchestrator {
 
-    private final ChatClient chatClient;
+    private final Map<String, PipelineState> stateStore = new ConcurrentHashMap<>();
 
-    private static final String EXPANSION_PROMPT = """
-        You are a search assistant. Given a user's query, produce 2 alternative 
-        search queries that capture the same intent using different wording.
-        
-        Rules:
-        - Keep each variant concise (under 15 words)
-        - Do not add new meaning not implied by the original
-        - Output ONLY a JSON array of strings, no explanation
-        
-        Original query: {query}
-        
-        Output format: ["variant 1", "variant 2"]
-        """;
+    public CompletableFuture<SearchResponse> search(String query) {
+        String correlationId = UUID.randomUUID().toString();
+        CompletableFuture<SearchResponse> future = new CompletableFuture<>();
+        stateStore.put(correlationId, new PipelineState(query, future));
 
-    public List<String> expand(String originalQuery) {
-        String raw = chatClient.prompt()
-            .user(u -> u.text(EXPANSION_PROMPT).param("query", originalQuery))
-            .call()
-            .content();
-        // Parse JSON array → List<String>
-        List<String> variants = parseJsonArray(raw);
-        // Always include the original
-        variants.add(0, originalQuery);
-        return variants;
+        publisher.publish("query.expand", new QueryExpandEvent(correlationId, query));
+        return future;
+    }
+
+    // Called by ResultConsumer when each topic result arrives
+    public void onQueryExpanded(QueryExpandedEvent event) {
+        PipelineState state = stateStore.get(event.correlationId());
+        publisher.publish("retrieval.request", new RetrievalRequestEvent(
+            event.correlationId(), event.originalQuery(), event.variants(), 20
+        ));
+    }
+
+    public void onRetrievalResults(RetrievalResultEvent event) { ... }
+    public void onRerankResults(RerankResultEvent event) { ... }
+
+    public void onAnswerResults(AnswerResultEvent event) {
+        PipelineState state = stateStore.remove(event.correlationId());
+        state.future().complete(new SearchResponse(event.answer(), event.sources()));
     }
 }
+```
+
+---
+
+## Stage 1: query-expansion-service
+
+### Purpose
+
+User queries are often short, ambiguous, or use different vocabulary than the indexed documents. This service rewrites the original query into multiple variants to improve recall — ensuring we don't miss relevant documents because of vocabulary mismatch.
+
+### Kafka Flow
+
+```
+Consumes: query.expand
+Produces: query.expanded
+```
+
+### Implementation
+
+```java
+@KafkaListener(topics = "query.expand")
+public void consume(QueryExpandEvent event) {
+    List<String> variants = expansionService.expand(event.query());
+    publisher.send("query.expanded", new QueryExpandedEvent(
+        event.correlationId(), event.query(), variants
+    ));
+}
+```
+
+### LLM Prompt
+
+```java
+private static final String EXPANSION_PROMPT = """
+    You are a search assistant. Given a user query, produce 2 alternative
+    search queries that capture the same intent using different wording.
+    
+    Rules:
+    - Keep each variant concise (under 15 words)
+    - Do not add new meaning not implied by the original
+    - Output ONLY a JSON array of strings, no explanation
+    
+    Original query: {query}
+    
+    Output format: ["variant 1", "variant 2"]
+    """;
 ```
 
 ### Example
 
 Input: `"can I get money back"`
 
-Expanded:
+Output:
 ```json
 ["can I get money back", "refund policy", "return and reimbursement process"]
 ```
 
-All three variants are used in Stage 2 retrieval (deduplicated by document ID before merging).
-
 ---
 
-## Stage 2: Hybrid Retrieval
+## Stage 2: hybrid-retrieval-service
 
 ### Purpose
 
-Single-mode retrieval has known weaknesses:
-- **Vector search alone** misses exact keyword matches (product names, codes, IDs)
-- **BM25 alone** misses semantic matches (synonyms, paraphrases)
+Single-mode retrieval has known weaknesses — vector search alone misses exact keyword matches; BM25 alone misses semantic matches. This service runs both in parallel per query variant and merges results using **Reciprocal Rank Fusion (RRF)**.
 
-Hybrid retrieval runs both and merges results using **Reciprocal Rank Fusion (RRF)**.
+### Kafka Flow
+
+```
+Consumes: retrieval.request
+Produces: retrieval.results
+```
 
 ### Implementation
 
-**Class:** `HybridRetrievalService`
-
 ```java
-@Service
-public class HybridRetrievalService {
+@KafkaListener(topics = "retrieval.request")
+public void consume(RetrievalRequestEvent event) {
+    List<Document> vectorResults = new ArrayList<>();
+    List<Document> keywordResults = new ArrayList<>();
 
-    private final VectorStore vectorStore;
-    private final ElasticsearchService elasticsearchService;
-    private final RRFMerger rrfMerger;
-
-    public List<Document> retrieve(List<String> queryVariants, int topK) {
-        List<Document> vectorResults = new ArrayList<>();
-        List<Document> keywordResults = new ArrayList<>();
-
-        for (String variant : queryVariants) {
-            vectorResults.addAll(
-                vectorStore.similaritySearch(SearchRequest.query(variant).withTopK(20))
-            );
-            keywordResults.addAll(
-                elasticsearchService.bm25Search(variant, 20)
-            );
-        }
-
-        return rrfMerger.merge(vectorResults, keywordResults, topK);
+    for (String variant : event.variants()) {
+        vectorResults.addAll(vectorSearchService.search(variant, 20));
+        keywordResults.addAll(bm25SearchService.search(variant, 20));
     }
+
+    List<Document> merged = rrfMerger.merge(vectorResults, keywordResults, event.topK());
+    publisher.send("retrieval.results", new RetrievalResultEvent(
+        event.correlationId(), merged
+    ));
 }
 ```
 
-### RRF Merge Algorithm
+### RRF Algorithm
 
-**Class:** `RRFMerger` (in `shared` module)
-
-RRF avoids the need to normalize scores across different retrieval systems. Each document's final score is:
+Each document's final score combines its rank across both retrieval lists:
 
 ```
-RRF_score(doc) = Σ  1 / (k + rank_in_list)
+RRF_score(doc) = Σ  1 / (k + rank_in_list)    where k = 60
                 lists
-
-where k = 60  (standard constant)
 ```
 
 ```java
-public List<Document> merge(
-    List<Document> vectorDocs, 
-    List<Document> keywordDocs, 
-    int topK
-) {
+public List<Document> merge(List<Document> vectorDocs, List<Document> keywordDocs, int topK) {
     Map<String, Double> scores = new HashMap<>();
     int k = 60;
 
-    rankDocuments(vectorDocs, scores, k);
-    rankDocuments(keywordDocs, scores, k);
+    for (int i = 0; i < vectorDocs.size(); i++)
+        scores.merge(vectorDocs.get(i).getId(), 1.0 / (k + i + 1), Double::sum);
+    for (int i = 0; i < keywordDocs.size(); i++)
+        scores.merge(keywordDocs.get(i).getId(), 1.0 / (k + i + 1), Double::sum);
 
     return scores.entrySet().stream()
         .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
         .limit(topK)
-        .map(e -> findDocById(e.getKey(), vectorDocs, keywordDocs))
+        .map(e -> findById(e.getKey(), vectorDocs, keywordDocs))
         .toList();
 }
 ```
 
 ---
 
-## Stage 3: LLM Reranker ✅ (Kept Unchanged)
+## Stage 3: reranker-service ✅ LLM-only (Kept)
 
 ### Purpose
 
-After hybrid retrieval, we have up to 20 candidate documents. Not all of them are truly relevant. The LLM reranker re-evaluates each document against the **original query** and assigns a relevance score, returning only the top-N most relevant.
+After hybrid retrieval, we have up to 20 candidate documents. Not all are truly relevant. The reranker re-evaluates each document against the **original query** using an LLM and returns only the top-5 most relevant.
 
-This is kept as **LLM-only** (no cross-encoder models, no learned reranker weights) — the LLM itself judges relevance.
+Kept as **LLM-only** — no cross-encoder models, no learned weights. The same Ollama LLM is repurposed as a relevance judge.
 
-### Design Decisions
+### Kafka Flow
 
-- **Why LLM-only?** Avoids maintaining a separate embedding/cross-encoder model. The same LLM used for generation is repurposed for evaluation, keeping the stack simple.
-- **Batch scoring:** All candidates are scored in a single LLM call to reduce latency.
-- **Fallback:** If LLM reranking fails (timeout, parse error), fall back to the original RRF-ordered list.
+```
+Consumes: rerank.request
+Produces: rerank.results
+```
 
 ### Implementation
 
-**Class:** `LLMReranker`
-
 ```java
-@Service
-public class LLMReranker {
-
-    private final ChatClient chatClient;
-
-    private static final String RERANK_PROMPT = """
-        You are a relevance judge. Given a search query and a list of document passages,
-        score each passage from 0 to 10 based on how well it answers the query.
-        
-        Query: {query}
-        
-        Passages:
-        {passages}
-        
-        Rules:
-        - 10 = directly and completely answers the query
-        - 5  = partially relevant
-        - 0  = irrelevant
-        - Output ONLY valid JSON: [{"id": "...", "score": N}, ...]
-        - Do not explain your reasoning
-        """;
-
-    public List<RankedDocument> rerank(String query, List<Document> candidates) {
-        String passagesJson = buildPassagesJson(candidates);
-
-        String raw = chatClient.prompt()
-            .user(u -> u.text(RERANK_PROMPT)
-                .param("query", query)
-                .param("passages", passagesJson))
-            .call()
-            .content();
-
-        return parseScores(raw, candidates)
-            .stream()
-            .sorted(Comparator.comparingDouble(RankedDocument::score).reversed())
-            .limit(5)
+@KafkaListener(topics = "rerank.request")
+public void consume(RerankRequestEvent event) {
+    List<RankedDocument> ranked;
+    try {
+        ranked = reranker.rerank(event.query(), event.candidates());
+    } catch (Exception e) {
+        // Fallback: return original RRF order, top-5
+        ranked = event.candidates().stream().limit(5)
+            .map(d -> new RankedDocument(d, 0.0))
             .toList();
     }
-
-    private String buildPassagesJson(List<Document> docs) {
-        // Format: [{"id": "uuid", "text": "...truncated to 300 chars..."}, ...]
-        return docs.stream()
-            .map(d -> Map.of("id", d.getId(), "text", truncate(d.getContent(), 300)))
-            .collect(toJson());
-    }
+    publisher.send("rerank.results", new RerankResultEvent(event.correlationId(), ranked));
 }
 ```
 
-### Prompt Considerations
+### LLM Prompt
 
-- Passages are **truncated to ~300 characters** per document to fit within context limits when scoring 20 candidates at once
-- The LLM is instructed to output **only JSON** to enable reliable parsing
-- A `score` threshold can optionally filter out documents below a minimum relevance (e.g., discard score < 3)
+```java
+private static final String RERANK_PROMPT = """
+    You are a relevance judge. Given a search query and a list of document passages,
+    score each passage from 0 to 10 based on how well it answers the query.
+    
+    Query: {query}
+    
+    Passages:
+    {passages}
+    
+    Scoring guide:
+    - 10 = directly and completely answers the query
+    - 5  = partially relevant or tangentially related
+    - 0  = irrelevant
+    
+    Output ONLY valid JSON — no explanation:
+    [{"id": "...", "score": N}, ...]
+    """;
+```
 
-### Reranker Output Model
+### Design Decisions
+
+- **Batch scoring** — all 20 candidates scored in a single LLM call to reduce Ollama round-trips
+- **Truncation** — passages truncated to ~300 chars each to stay within context limits
+- **Score threshold** — documents scoring below 3 are discarded before returning top-5
+- **Fallback** — any LLM timeout or parse error falls back to the original RRF-ranked order
+
+### Output Model
 
 ```java
 public record RankedDocument(
     String id,
     String content,
     Map<String, Object> metadata,
-    double score          // LLM relevance score 0–10
+    double llmScore    // 0–10
 ) {}
 ```
 
 ---
 
-## Stage 4: Answer Generation
+## Stage 4: answer-generation-service
 
 ### Purpose
 
-After reranking, the top-5 documents are assembled as **context** and fed to the LLM for final answer generation. This is standard RAG, but grounded in high-quality, reranked documents.
+Takes the top-5 reranked documents as context and generates a grounded natural language answer using Ollama via Spring AI RAG.
+
+### Kafka Flow
+
+```
+Consumes: answer.request
+Produces: answer.results
+```
 
 ### Implementation
 
-**Class:** `AnswerGenerationService`
+```java
+@KafkaListener(topics = "answer.request")
+public void consume(AnswerRequestEvent event) {
+    String context = event.context().stream()
+        .map(RankedDocument::content)
+        .collect(Collectors.joining("\n\n---\n\n"));
+
+    String answer = chatClient.prompt()
+        .user(u -> u.text(RAG_PROMPT)
+            .param("question", event.query())
+            .param("context", context))
+        .call()
+        .content();
+
+    publisher.send("answer.results", new AnswerResultEvent(
+        event.correlationId(), answer, event.context()
+    ));
+}
+```
+
+### LLM Prompt
 
 ```java
-@Service
-public class AnswerGenerationService {
-
-    private final ChatClient chatClient;
-
-    private static final String RAG_PROMPT = """
-        You are a helpful assistant. Answer the user's question using ONLY the 
-        provided context. If the context does not contain enough information to 
-        answer, say so clearly — do not fabricate.
-        
-        Context:
-        {context}
-        
-        Question: {question}
-        
-        Answer:
-        """;
-
-    public SearchResult generate(String query, List<RankedDocument> topDocs) {
-        String context = topDocs.stream()
-            .map(RankedDocument::content)
-            .collect(Collectors.joining("\n\n---\n\n"));
-
-        String answer = chatClient.prompt()
-            .user(u -> u.text(RAG_PROMPT)
-                .param("question", query)
-                .param("context", context))
-            .call()
-            .content();
-
-        return new SearchResult(answer, topDocs);
-    }
-}
+private static final String RAG_PROMPT = """
+    You are a helpful assistant. Answer the user's question using ONLY the
+    provided context. If the context does not contain enough information,
+    say so clearly — do not fabricate.
+    
+    Context:
+    {context}
+    
+    Question: {question}
+    
+    Answer:
+    """;
 ```
 
 ---
 
-## Pipeline Orchestration
+## Ollama Configuration
 
-The four stages are wired together in a single pipeline bean:
-
-**Class:** `SearchPipelineConfig`
-
-```java
-@Configuration
-public class SearchPipelineConfig {
-
-    @Bean
-    public Function<SearchRequest, SearchResult> searchPipeline(
-        QueryExpansionService expansion,
-        HybridRetrievalService retrieval,
-        LLMReranker reranker,
-        AnswerGenerationService generator
-    ) {
-        return request -> {
-            // Stage 1: Expand query
-            List<String> variants = expansion.expand(request.query());
-
-            // Stage 2: Hybrid retrieve
-            List<Document> candidates = retrieval.retrieve(variants, 20);
-
-            // Stage 3: LLM rerank
-            List<RankedDocument> top5 = reranker.rerank(request.query(), candidates);
-
-            // Stage 4: Generate answer
-            return generator.generate(request.query(), top5);
-        };
-    }
-}
-```
-
----
-
-## LLM Configuration
-
-All three LLM-using stages share the same `ChatClient` bean but can be independently configured with different models or parameters via Spring AI's `ChatOptions`:
+All three LLM services share the same Ollama runtime but can use different models per stage:
 
 ```yaml
-# application.yml
+# application.yml (shared base)
 spring:
   ai:
-    openai:
-      api-key: ${OPENAI_API_KEY}
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
       chat:
         options:
-          model: gpt-4o-mini        # cost-effective default
-          temperature: 0.0          # deterministic for reranking/expansion
-          max-tokens: 1000
+          model: llama3.2
+          temperature: 0.0      # deterministic for expansion and reranking
 
 search:
   pipeline:
     expansion:
-      model: gpt-4o-mini
+      model: llama3.2
     reranker:
-      model: gpt-4o-mini            # or upgrade to gpt-4o for precision
+      model: llama3.2           # swap to a larger model for better precision
+      score-threshold: 3.0
       fallback-on-error: true
     generation:
-      model: gpt-4o
-      max-tokens: 2000
+      model: llama3.2
+      num-predict: 2000
+      temperature: 0.3          # slight creativity for answer phrasing
 ```
 
 ---
 
 ## Error Handling & Fallbacks
 
-| Stage | Failure Mode | Fallback |
+| Service | Failure Mode | Fallback |
 |---|---|---|
-| Query Expansion | LLM timeout / parse error | Use original query only |
-| Hybrid Retrieval | Elasticsearch down | Fall back to vector-only search |
-| LLM Reranker | LLM timeout / parse error | Use RRF-ordered list as-is |
-| Answer Generation | LLM timeout | Return top document content directly |
+| `query-expansion-service` | LLM timeout / parse error | Publish original query only as single variant |
+| `hybrid-retrieval-service` | Elasticsearch down | Fall back to Qdrant vector search only |
+| `hybrid-retrieval-service` | Qdrant down | Fall back to Elasticsearch BM25 only |
+| `reranker-service` | LLM timeout / parse error | Return top-5 from RRF order as-is |
+| `answer-generation-service` | LLM timeout | Return top document content directly as answer |
+| `search-orchestrator` | Stage timeout (any) | Return partial result with error flag |
 
 ---
 
 ## Observability
 
-Each stage emits metrics via **Micrometer** and spans via **OpenTelemetry**:
+Each service emits Micrometer metrics and OpenTelemetry spans. The `correlationId` is propagated as a trace attribute across all Kafka hops.
 
 ```java
-// Example: reranker span
-@Observed(name = "search.reranker", contextualName = "llm-rerank")
+// Example annotation on reranker
+@Observed(name = "reranker.score", contextualName = "llm-rerank")
 public List<RankedDocument> rerank(String query, List<Document> candidates) { ... }
 ```
 
-Key metrics to track:
+Key metrics per service:
 
-- `search.pipeline.latency` — end-to-end latency per stage
-- `llm.tokens.used` — token count per LLM call (for cost monitoring)
-- `search.reranker.score.distribution` — histogram of relevance scores returned
-- `search.retrieval.candidate.count` — how many docs reached each stage
+| Metric | Description |
+|---|---|
+| `pipeline.stage.latency` | Time per Kafka hop (tagged by service) |
+| `llm.tokens.used` | Token count per Ollama call |
+| `retrieval.candidates.count` | Documents returned per retrieval |
+| `reranker.score.distribution` | Histogram of LLM relevance scores |
+| `kafka.consumer.lag` | Per-topic consumer lag for autoscaling signals |
+
+---
+
+## Scaling Guide
+
+Because each stage is an independent Kafka consumer group, they scale independently:
+
+```mermaid
+flowchart LR
+    subgraph Heavy LLM Load
+        RR[reranker-service\nscale: 2–8 replicas]
+        AG[answer-generation-service\nscale: 1–6 replicas]
+    end
+
+    subgraph High Throughput IO
+        HR[hybrid-retrieval-service\nscale: 2–10 replicas]
+    end
+
+    subgraph Low Load
+        QE[query-expansion-service\nscale: 1–4 replicas]
+        GW[search-orchestrator\nscale: 2–8 replicas]
+    end
+```
+
+Scale trigger: **Kafka consumer lag** per topic is the most reliable signal. Configure KEDA or HPA with custom metrics for lag-based autoscaling.
+
+Kubernetes manifests (Deployments, Services, HPAs) are maintained in:
+**[github.com/Peqchji/k8s-lab — branch: spring-ai-search-engine](https://github.com/Peqchji/k8s-lab/tree/spring-ai-search-engine)**
 
 ---
 
 ## Future Enhancements
 
-- **Query routing** — classify query type (factual vs. conversational) and route to different pipeline variants
-- **Session memory** — include prior turns in query expansion context for multi-turn search
-- **Streaming responses** — stream the answer generation stage via Spring AI's streaming `ChatClient`
-- **Evaluation harness** — offline NDCG / MRR evaluation against labeled query sets to measure reranker quality
+- **Query routing** — orchestrator classifies query type (factual vs. conversational) and skips expansion for simple lookups
+- **Streaming answers** — stream `answer-generation-service` output back to the client via SSE instead of waiting for full completion
+- **Session memory** — pass prior turns into `query-expansion-service` for multi-turn search context
+- **Evaluation harness** — offline NDCG / MRR scoring against labeled query sets to benchmark reranker quality across model upgrades
