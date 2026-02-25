@@ -13,6 +13,16 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
+  threads:
+    virtual:
+      enabled: true
+
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/ingestion-db}
+    elasticsearch:
+      uris: ${SPRING_ELASTICSEARCH_URIS:http://localhost:9200}
+
   # Spring AI — Ollama (embedding model)
   ai:
     ollama:
@@ -21,12 +31,18 @@ spring:
         options:
           model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
 
-    # Spring AI — Qdrant vector store
+    # Spring AI — MongoDB vector store
     vectorstore:
-      qdrant:
-        host: ${SPRING_AI_VECTORSTORE_QDRANT_HOST:localhost}
-        port: ${SPRING_AI_VECTORSTORE_QDRANT_PORT:6334}
-        collection-name: ${SPRING_AI_VECTORSTORE_QDRANT_COLLECTION_NAME:documents}
+      mongodb:
+        collection-name: ${SPRING_AI_VECTORSTORE_MONGODB_COLLECTION_NAME:documents}
+        path-name: ${SPRING_AI_VECTORSTORE_MONGODB_PATH_NAME:embedding}
+        index-name: ${SPRING_AI_VECTORSTORE_MONGODB_INDEX_NAME:vector_index}
+
 
 server:
   port: 8085
+
+app:
+  chunking:
+    size: ${CHUNK_SIZE:800}
+    overlap: ${CHUNK_OVERLAP:100}

@@ -26,16 +26,16 @@ spring:
                 name: searchCB
                 fallbackUri: forward:/fallback
 
-      default-filters:
-        - name: RequestRateLimiter
-          args:
-            redis-rate-limiter.replenishRate: 10
-            redis-rate-limiter.burstCapacity: 20
-
 server:
   port: ${GATEWAY_PORT:8080}
 
-# Actuator
+# Resilience4j Config
+resilience4j:
+  timelimiter:
+    configs:
+      default:
+        timeoutDuration: 60s
+
 management:
   endpoints:
     web:
@@ -44,3 +44,10 @@ management:
   endpoint:
     gateway:
       enabled: true
+
+logging:
+  level:
+    org.springframework.cloud.gateway: TRACE
+    org.springframework.http.server.reactive: DEBUG
+    org.springframework.web.reactive: DEBUG
+    reactor.netty: DEBUG
