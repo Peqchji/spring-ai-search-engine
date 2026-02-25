@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import com.search.ai.shared.util.constants.AppConstants;
 
 import java.time.LocalDateTime;
 
@@ -13,11 +14,11 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(collection = "ingestions")
+@Document(collection = AppConstants.SPEL_COLLECTION_INGESTIONS)
 public class IngestionMetadata {
     @Id
     private String id;
-    
+
     private String filename;
     private String contentType;
     private int documentCount;

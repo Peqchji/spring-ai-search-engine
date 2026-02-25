@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.util.List;
 import java.util.Map;
@@ -15,7 +16,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class KafkaDocumentPublisher {
 
-    private static final String TOPIC = "raw-docs";
+    @Value("${app.kafka.topics.raw-docs:raw-docs}")
+    private String topic;
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
 
@@ -24,11 +26,10 @@ public class KafkaDocumentPublisher {
             var payload = Map.of(
                     "id", chunk.getId(),
                     "content", chunk.getText(),
-                    "metadata", chunk.getMetadata()
-            );
-            
-            kafkaTemplate.send(TOPIC, chunk.getId(), payload);
+                    "metadata", chunk.getMetadata());
+
+            kafkaTemplate.send(topic, chunk.getId(), payload);
         }
-        log.info("Published {} chunks to topic '{}'", chunks.size(), TOPIC);
+        log.info("Published {} chunks to topic '{}'", chunks.size(), topic);
     }
 }

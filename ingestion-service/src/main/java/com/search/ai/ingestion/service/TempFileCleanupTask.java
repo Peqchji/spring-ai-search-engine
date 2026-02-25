@@ -1,6 +1,5 @@
 package com.search.ai.ingestion.service;
 
-import com.search.ai.shared.util.constants.AppConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +20,9 @@ public class TempFileCleanupTask {
     @Value("${app.cleanup.temp-file-retention-days:1}")
     private long retentionDays;
 
+    @Value("${app.file.temp-prefix:async-ingest-}")
+    private String tempFilePrefix;
+
     /**
      * Background worker that runs every hour to clean up temporary ingestion files
      * that are older than the configured retention period. This prevents the OS
@@ -39,7 +41,7 @@ public class TempFileCleanupTask {
 
         try (Stream<Path> files = Files.list(tmpDirPath)) {
             files.filter(Files::isRegularFile)
-                    .filter(path -> path.getFileName().toString().startsWith(AppConstants.TEMP_FILE_PREFIX_INGEST))
+                    .filter(path -> path.getFileName().toString().startsWith(tempFilePrefix))
                     .forEach(path -> {
                         try {
                             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);

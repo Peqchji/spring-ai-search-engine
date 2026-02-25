@@ -8,11 +8,11 @@ import com.search.ai.ingestion.model.OutboxEvent;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
 import com.search.ai.ingestion.repository.OutboxRepository;
 import com.search.ai.shared.model.DocumentEventDTO;
-import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.shared.constant.APIMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +32,9 @@ public class AsyncIngestionWorker {
     private final IngestionMetadataRepository metadataRepository;
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
+
+    @Value("${app.events.ingestion-completed:INGESTION_COMPLETED}")
+    private String eventTypeIngestionCompleted;
 
     @Async
     @Transactional
@@ -83,7 +86,7 @@ public class AsyncIngestionWorker {
 
         OutboxEvent event = OutboxEvent.builder()
                 .aggregateId(metadata.getId())
-                .type(AppConstants.EVENT_TYPE_INGESTION_COMPLETED)
+                .type(eventTypeIngestionCompleted)
                 .payload(objectMapper.writeValueAsString(dtos))
                 .createdAt(LocalDateTime.now())
                 .processed(false)

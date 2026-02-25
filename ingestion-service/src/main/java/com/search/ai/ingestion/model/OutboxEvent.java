@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import com.search.ai.shared.util.constants.AppConstants;
 
 import java.time.LocalDateTime;
 
@@ -13,7 +14,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(collection = "outbox_events")
+@Document(collection = AppConstants.SPEL_COLLECTION_OUTBOX)
 public class OutboxEvent {
 
     @Id

@@ -4,7 +4,6 @@ import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
 
-import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.shared.constant.APIMessages;
 
 import lombok.RequiredArgsConstructor;
@@ -27,6 +26,9 @@ public class IngestionFacade {
         private final IngestionMetadataRepository metadataRepository;
         private final AsyncIngestionWorker asyncIngestionWorker;
 
+        @org.springframework.beans.factory.annotation.Value("${app.file.temp-prefix:async-ingest-}")
+        private String tempFilePrefix;
+
         /**
          * Orchestrates the full ingestion pipeline using the Asynchronous Job Pattern.
          * The file is spooled to disk, a job record is defined, and the heavy Tika
@@ -38,7 +40,7 @@ public class IngestionFacade {
                 log.info("Accepting file for ingestion: {} ({})", file.getOriginalFilename(), file.getContentType());
 
                 try {
-                        Path tempFile = Files.createTempFile(AppConstants.TEMP_FILE_PREFIX_INGEST,
+                        Path tempFile = Files.createTempFile(tempFilePrefix,
                                         "-" + file.getOriginalFilename());
                         file.transferTo(tempFile);
                         log.info("Spooled {} bytes to disk: {}", file.getSize(), tempFile);
