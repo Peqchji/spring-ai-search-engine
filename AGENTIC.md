@@ -24,18 +24,18 @@ All three are decoupled from each other and from the retrieval layer — connect
 flowchart TD
     Q([User Query]) --> ORCH
 
-    ORCH[search-orchestrator\nCorrelation · State · Routing]
+    ORCH[search-orchestrator<br>Correlation · State · Routing]
 
-    ORCH -->|query.expand| S1["query-expansion-service\n🧠 LLM Agent\nExpand query into variants"]
+    ORCH -->|query.expand| S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
     S1 -->|query.expanded| ORCH
 
-    ORCH -->|retrieval.request| S2["hybrid-retrieval-service\n⚙️ Deterministic\nVector + BM25 + RRF"]
+    ORCH -->|retrieval.request| S2["hybrid-retrieval-service<br>⚙️ Deterministic<br>Vector + BM25 + RRF"]
     S2 -->|retrieval.results| ORCH
 
-    ORCH -->|rerank.request| S3["reranker-service\n🏆 LLM Agent — KEEP\nScore candidates · return top-5"]
+    ORCH -->|rerank.request| S3["reranker-service<br>🏆 LLM Agent — KEEP<br>Score candidates · return top-5"]
     S3 -->|rerank.results| ORCH
 
-    ORCH -->|answer.request| S4["answer-generation-service\n✍️ LLM Agent\nRAG generation"]
+    ORCH -->|answer.request| S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
     S4 -->|answer.results| ORCH
 
     ORCH --> R([Final Response])
@@ -137,11 +137,11 @@ It does **not** perform any LLM or retrieval work itself — it is a pure coordi
 
 ```mermaid
 stateDiagram-v2
-    [*] --> EXPANDING: POST /search received\npublish query.expand
-    EXPANDING --> RETRIEVING: query.expanded received\npublish retrieval.request
-    RETRIEVING --> RERANKING: retrieval.results received\npublish rerank.request
-    RERANKING --> GENERATING: rerank.results received\npublish answer.request
-    GENERATING --> DONE: answer.results received\nreturn response to user
+    [*] --> EXPANDING: POST /search received<br>publish query.expand
+    EXPANDING --> RETRIEVING: query.expanded received<br>publish retrieval.request
+    RETRIEVING --> RERANKING: retrieval.results received<br>publish rerank.request
+    RERANKING --> GENERATING: rerank.results received<br>publish answer.request
+    GENERATING --> DONE: answer.results received<br>return response to user
     EXPANDING --> FAILED: timeout
     RETRIEVING --> FAILED: timeout
     RERANKING --> FAILED: timeout / fallback to RRF order
