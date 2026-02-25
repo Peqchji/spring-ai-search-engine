@@ -2,6 +2,7 @@ package com.search.ai.ingestion.service;
 
 import com.search.ai.shared.util.constants.AppConstants;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -17,20 +18,24 @@ import java.util.stream.Stream;
 @Service
 public class TempFileCleanupTask {
 
+    @Value("${app.cleanup.temp-file-retention-days:1}")
+    private long retentionDays;
+
     /**
      * Background worker that runs every hour to clean up temporary ingestion files
-     * that are older than 1 day. This prevents the OS temp directory from filling
-     * up
-     * while allowing files to live securely longer than the active ingestion
+     * that are older than the configured retention period. This prevents the OS
+     * temp directory from filling
+     * up while allowing files to live securely longer than the active ingestion
      * request lifecycle.
      */
     @Scheduled(fixedRateString = "${app.cleanup.temp-file-rate-ms:3600000}") // 1 hour default
     public void cleanupOldTempFiles() {
         String tmpDir = System.getProperty("java.io.tmpdir");
         Path tmpDirPath = Path.of(tmpDir);
-        Instant oneDayAgo = Instant.now().minus(1, ChronoUnit.DAYS);
+        Instant cutoffTime = Instant.now().minus(retentionDays, ChronoUnit.DAYS);
 
-        log.info("Starting cleanup of temporary ingest files in {} older than {}", tmpDir, oneDayAgo);
+        log.info("Starting cleanup of temporary ingest files in {} older than {} days ({})", tmpDir, retentionDays,
+                cutoffTime);
 
         try (Stream<Path> files = Files.list(tmpDirPath)) {
             files.filter(Files::isRegularFile)
@@ -38,7 +43,7 @@ public class TempFileCleanupTask {
                     .forEach(path -> {
                         try {
                             BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
-                            if (attrs.lastModifiedTime().toInstant().isBefore(oneDayAgo)) {
+                            if (attrs.lastModifiedTime().toInstant().isBefore(cutoffTime)) {
                                 Files.deleteIfExists(path);
                                 log.info("Deleted old temporary file: {}", path);
                             }
