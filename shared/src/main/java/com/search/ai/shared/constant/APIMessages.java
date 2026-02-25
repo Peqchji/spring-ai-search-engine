@@ -10,4 +10,7 @@ public final class APIMessages {
 
     // ── Ingestion ──
     public static final String INGEST_SUCCESS = "File ingested successfully";
+    public static final String INGEST_ASYNC_STARTED = "Ingestion job started in the background.";
+    public static final String ERROR_ASYNC_IO = "Async I/O Error";
+    public static final String ERROR_METADATA_NOT_FOUND = "IngestionMetadata not found for ID: ";
 }

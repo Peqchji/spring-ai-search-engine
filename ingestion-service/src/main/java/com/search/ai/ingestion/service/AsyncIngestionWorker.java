@@ -9,6 +9,7 @@ import com.search.ai.ingestion.repository.IngestionMetadataRepository;
 import com.search.ai.ingestion.repository.OutboxRepository;
 import com.search.ai.shared.model.DocumentEventDTO;
 import com.search.ai.shared.util.constants.AppConstants;
+import com.search.ai.shared.constant.APIMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
@@ -16,7 +17,6 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -39,7 +39,7 @@ public class AsyncIngestionWorker {
         log.info("Starting background ingestion for trace id: {}", metadataId);
 
         IngestionMetadata metadata = metadataRepository.findById(metadataId)
-                .orElseThrow(() -> new RuntimeException("IngestionMetadata not found for ID: " + metadataId));
+                .orElseThrow(() -> new RuntimeException(APIMessages.ERROR_METADATA_NOT_FOUND + metadataId));
 
         metadata.setStatus(IngestionStatus.PROCESSING);
         metadata = metadataRepository.save(metadata);
@@ -69,14 +69,6 @@ public class AsyncIngestionWorker {
             log.error("Failed to process ingestion for id: {}", metadataId, e);
             metadata.setStatus(IngestionStatus.FAILED);
             metadataRepository.save(metadata);
-        } finally {
-            // Clean up temporary file from disk
-            try {
-                Files.deleteIfExists(filePath);
-                log.info("Cleaned up temp file: {}", filePath);
-            } catch (Exception ex) {
-                log.warn("Failed to delete temp file: {}", filePath, ex);
-            }
         }
     }
 

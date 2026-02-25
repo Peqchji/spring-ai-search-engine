@@ -4,6 +4,9 @@ import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
 
+import com.search.ai.shared.util.constants.AppConstants;
+import com.search.ai.shared.constant.APIMessages;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,17 +38,16 @@ public class IngestionFacade {
                 log.info("Accepting file for ingestion: {} ({})", file.getOriginalFilename(), file.getContentType());
 
                 try {
-                        // 1. Spool file to disk (Zero-Copy) to avoid RAM exhaustion
-                        Path tempFile = Files.createTempFile("async-ingest-", "-" + file.getOriginalFilename());
+                        Path tempFile = Files.createTempFile(AppConstants.TEMP_FILE_PREFIX_INGEST,
+                                        "-" + file.getOriginalFilename());
                         file.transferTo(tempFile);
                         log.info("Spooled {} bytes to disk: {}", file.getSize(), tempFile);
 
-                        // 2. Create tracking record (PENDING)
                         IngestionMetadata metadata = IngestionMetadata.builder()
                                         .filename(file.getOriginalFilename())
                                         .contentType(file.getContentType())
-                                        .documentCount(0) // Known later
-                                        .chunkCount(0) // Known later
+                                        .documentCount(0)
+                                        .chunkCount(0)
                                         .ingestedAt(LocalDateTime.now())
                                         .status(IngestionStatus.PENDING)
                                         .build();
@@ -59,13 +61,13 @@ public class IngestionFacade {
                         return new IngestionResult(
                                         metadata.getId(),
                                         file.getOriginalFilename(),
-                                        "PENDING",
-                                        "Ingestion job started in the background.");
+                                        IngestionStatus.PENDING.name(),
+                                        APIMessages.INGEST_ASYNC_STARTED);
 
                 } catch (IOException e) {
                         log.error("Failed to spool upload to disk for async processing", e);
-                        
-                        throw new RuntimeException("Async I/O Error", e);
+
+                        throw new RuntimeException(APIMessages.ERROR_ASYNC_IO, e);
                 }
         }
 

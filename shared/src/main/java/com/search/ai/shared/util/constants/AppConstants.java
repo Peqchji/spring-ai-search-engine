@@ -22,6 +22,9 @@ public final class AppConstants {
     public static final String STATUS_COMPLETED = "COMPLETED";
     public static final String STATUS_ERROR = "ERROR";
 
+    // File Handling
+    public static final String TEMP_FILE_PREFIX_INGEST = "async-ingest-";
+
     // Chunking Defaults
     public static final int DEFAULT_CHUNK_SIZE = 800;
     public static final int DEFAULT_CHUNK_OVERLAP = 100;
