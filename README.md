@@ -1,93 +1,321 @@
 # spring-ai-search-engine
 
-> An Enterprise-grade, Event-Driven AI Search Engine powered by Spring Boot 3.2+, Spring AI, and Kubernetes.
+> An Enterprise-grade, Event-Driven AI Search Engine powered by Spring Boot 3.3+, Spring AI, Kafka, and Kubernetes.
 
-![Java](https://img.shields.io/badge/Java-21-orange) ![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.2+-green) ![Spring AI](https://img.shields.io/badge/Spring_AI-0.8.1-blue) ![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5)
+[![Java](https://img.shields.io/badge/Java-21-orange)](https://openjdk.org/projects/jdk/21/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.3+-green)](https://spring.io/projects/spring-boot)
+[![Spring AI](https://img.shields.io/badge/Spring_AI-1.0-blue)](https://spring.io/projects/spring-ai)
+[![Kafka](https://img.shields.io/badge/Apache_Kafka-Event--Driven-black)](https://kafka.apache.org/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5)](https://kubernetes.io/)
+
+---
 
 ## 📖 Overview
 
-**Spring AI RAG Engine** is a modular, microservices-based search platform designed to demonstrate the power of **Retrieval Augmented Generation (RAG)** in a Java environment. 
+**Spring AI Search Engine** is a fully decomposed, event-driven microservices platform for AI-driven search. Every stage of the search pipeline runs as an **independent service** communicating exclusively over **Apache Kafka** — enabling each component to be scaled, deployed, and tuned in isolation.
 
-Unlike simple "chat with PDF" wrappers, this system is designed for scale. It decouples **Document Ingestion** (crawling, parsing, embedding) from **Search & Retrieval** using an event-driven architecture on **Apache Kafka**.
+The pipeline covers the full journey from user intent to grounded LLM answers — inspired by real-world systems like LINE MAN Wongnai's search evolution from keyword matching to semantic, intent-aware retrieval.
 
-### 🏗 Architecture
+---
+
+## 🏗 Architecture
+
+### Full System Architecture
 
 ```mermaid
-graph TD
-    User[User Query] -->|REST/gRPC| Gateway[API Gateway]
-    Gateway --> Search[Search Service]
-    Gateway --> Ingest[Ingestion Service]
-    
-    Ingest -->|Raw Text| Kafka{Apache Kafka}
-    Kafka -->|Topic: raw-docs| Processor[Embedding Processor]
-    
-    Processor -->|Chunk & Embed| VectorDB[(Vector Database)]
-    
-    Search -->|1. Vector Search| VectorDB
-    Search -->|2. Augment Prompt| LLM[LLM - OpenAI/Ollama]
-    LLM -->|3. Answer| Search
+flowchart TD
+    U([User]) --> GW
+
+    GW[search-orchestrator\nAPI Gateway · Pipeline Coordinator]
+
+    GW -->|topic: query.expand| QE[query-expansion-service\n🧠 LLM Query Rewrite]
+    QE -->|topic: query.expanded| GW
+
+    GW -->|topic: retrieval.request| HR[hybrid-retrieval-service\n🔍 Vector + BM25 + RRF]
+    HR -->|topic: retrieval.results| GW
+
+    GW -->|topic: rerank.request| RR[reranker-service\n🏆 LLM Reranker]
+    RR -->|topic: rerank.results| GW
+
+    GW -->|topic: answer.request| AG[answer-generation-service\n✍️ RAG Answer]
+    AG -->|topic: answer.results| GW
+
+    GW --> U
+
+    HR <-->|vector search| QD[(Qdrant)]
+    HR <-->|keyword search| ES[(Elasticsearch)]
+
+    QE & RR & AG <-->|inference| OL[[Ollama\nLLM Runtime]]
+
+    IS[ingestion-service\nLoad · Chunk · Embed · Index] -->|topic: raw-docs| K[[Kafka]]
+    K -->|embed sink| QD
+    K -->|index sink| ES
 ```
+
+### Kafka Topic Flow
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant GW as search-orchestrator
+    participant QE as query-expansion-service
+    participant HR as hybrid-retrieval-service
+    participant RR as reranker-service
+    participant AG as answer-generation-service
+
+    User->>GW: POST /search {query}
+
+    GW->>QE: topic: query.expand
+    QE-->>GW: topic: query.expanded {variants[]}
+
+    GW->>HR: topic: retrieval.request {variants[]}
+    HR-->>GW: topic: retrieval.results {candidates[20]}
+
+    GW->>RR: topic: rerank.request {query, candidates[20]}
+    RR-->>GW: topic: rerank.results {ranked[5]}
+
+    GW->>AG: topic: answer.request {query, ranked[5]}
+    AG-->>GW: topic: answer.results {answer, sources}
+
+    GW-->>User: SearchResponse
+```
+
+---
+
+## 📦 Services
+
+| Service | Responsibility | Consumes | Produces |
+|---|---|---|---|
+| `search-orchestrator` | API entry point, pipeline coordination, correlation tracking | `*.results` topics | `*.request` topics |
+| `query-expansion-service` | LLM rewrites query into 2–3 semantic variants | `query.expand` | `query.expanded` |
+| `hybrid-retrieval-service` | Dense vector + BM25 search, RRF merge | `retrieval.request` | `retrieval.results` |
+| `reranker-service` | LLM scores all candidates, returns top-5 | `rerank.request` | `rerank.results` |
+| `answer-generation-service` | RAG: LLM generates grounded answer from top-5 docs | `answer.request` | `answer.results` |
+| `ingestion-service` | Load, chunk, embed, index to Qdrant + Elasticsearch | — | `raw-docs` |
+
+---
+
+## 🗂 Module Structure
+
+```
+spring-ai-search-engine/
+│
+├── search-orchestrator/                  # API gateway + pipeline coordinator
+│   ├── controller/
+│   │   └── SearchController.java         # POST /search  POST /ingest (proxy)
+│   ├── pipeline/
+│   │   ├── PipelineOrchestrator.java     # Drives Kafka stages by correlationId
+│   │   └── PipelineStateStore.java       # In-memory state per in-flight request
+│   └── kafka/
+│       ├── SearchRequestPublisher.java
+│       └── ResultConsumer.java           # Listens on all *.results topics
+│
+├── query-expansion-service/
+│   ├── kafka/
+│   │   ├── QueryExpandConsumer.java      # Listens: query.expand
+│   │   └── QueryExpandedPublisher.java   # Publishes: query.expanded
+│   └── service/
+│       └── QueryExpansionService.java    # LLM → variant list
+│
+├── hybrid-retrieval-service/
+│   ├── kafka/
+│   │   ├── RetrievalRequestConsumer.java # Listens: retrieval.request
+│   │   └── RetrievalResultPublisher.java # Publishes: retrieval.results
+│   └── service/
+│       ├── VectorSearchService.java      # Qdrant similarity search
+│       ├── BM25SearchService.java        # Elasticsearch keyword search
+│       └── RRFMerger.java                # Reciprocal Rank Fusion
+│
+├── reranker-service/
+│   ├── kafka/
+│   │   ├── RerankRequestConsumer.java    # Listens: rerank.request
+│   │   └── RerankResultPublisher.java    # Publishes: rerank.results
+│   └── service/
+│       └── LLMReranker.java              # LLM-only scoring (KEEP)
+│
+├── answer-generation-service/
+│   ├── kafka/
+│   │   ├── AnswerRequestConsumer.java    # Listens: answer.request
+│   │   └── AnswerResultPublisher.java    # Publishes: answer.results
+│   └── service/
+│       └── AnswerGenerationService.java  # RAG prompt + LLM call
+│
+├── ingestion-service/
+│   ├── controller/
+│   │   └── IngestionController.java      # POST /ingest
+│   └── service/
+│       ├── DocumentLoaderService.java    # PDF / HTML / text parsing
+│       ├── ChunkingService.java          # TokenTextSplitter with overlap
+│       ├── EmbeddingService.java         # Spring AI EmbeddingClient → Ollama
+│       └── KafkaDocumentPublisher.java   # Publishes to raw-docs
+│
+├── shared/                               # Shared library — models + events
+│   ├── event/
+│   │   ├── QueryExpandEvent.java
+│   │   ├── QueryExpandedEvent.java
+│   │   ├── RetrievalRequestEvent.java
+│   │   ├── RetrievalResultEvent.java
+│   │   ├── RerankRequestEvent.java
+│   │   ├── RerankResultEvent.java
+│   │   ├── AnswerRequestEvent.java
+│   │   └── AnswerResultEvent.java
+│   ├── model/
+│   │   ├── SearchRequest.java
+│   │   ├── SearchResponse.java
+│   │   └── RankedDocument.java
+│   └── util/
+│       └── CorrelationIdGenerator.java
+│
+└── docker-compose.yml
+
+# Kubernetes manifests live in a separate repo:
+# https://github.com/Peqchji/k8s-lab/tree/spring-ai-search-engine
+```
+
+---
 
 ## 🚀 Key Features
 
-*   **⚡️ Event-Driven Ingestion:** Uploads are asynchronous. Heavy processing (PDF parsing, OCR) doesn't block the user API.
-*   **🧠 Spring AI Integration:** Native Java usage of `ChatClient`, `EmbeddingClient`, and `VectorStore`.
-*   **🐳 Kubernetes Native:** Designed with Deployment, Service, and HPA manifests for production scaling.
-*   **🔍 Hybrid Search:** Combines dense vector search with metadata filtering.
-*   **🛡 Observability:** Built-in metrics (Micrometer) and tracing (OpenTelemetry) for monitoring token usage and costs.
+- **⚡ Fully Event-Driven** — every pipeline stage communicates exclusively over Kafka; no synchronous HTTP between services
+- **📐 Independent Scalability** — scale `reranker-service` and `hybrid-retrieval-service` separately with their own HPAs
+- **🔗 Correlation Tracking** — orchestrator tracks each request end-to-end via a `correlationId` threaded through all Kafka events
+- **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, improving recall
+- **🔍 Hybrid Search** — Qdrant vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
+- **🏆 LLM Reranking** — LLM-only reranker scores all 20 candidates and returns top-5 (no separate cross-encoder model)
+- **✍️ Grounded Answers** — RAG generation grounded in top-5 reranked documents via Ollama
+- **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
+- **📊 Observability** — per-stage latency (Micrometer) and distributed tracing (OpenTelemetry)
+
+---
 
 ## 🛠 Tech Stack
 
-*   **Core:** Java 21, Spring Boot 3.2+
-*   **AI Framework:** Spring AI
-*   **Orchestration:** Kubernetes (K8s)
-*   **Messaging:** Apache Kafka
-*   **Vector Database:** Weaviate / PGVector (Configurable)
-*   **LLM Provider:** OpenAI / Azure OpenAI / Ollama (Local)
+| Layer | Technology |
+|---|---|
+| Language | Java 21 |
+| Framework | Spring Boot 3.3+, Spring AI 1.0 |
+| Messaging | Apache Kafka |
+| Vector Store | Qdrant |
+| Keyword Search | Elasticsearch (BM25) |
+| LLM Provider | Ollama (local) |
+| Orchestration | Kubernetes (K8s) |
+| Observability | Micrometer + OpenTelemetry |
 
-## 🏃‍♂️ Getting Started
+---
+
+## 🏃 Getting Started
 
 ### Prerequisites
 
-*   Java 21+
-*   Docker & Docker Compose
-*   Maven 3.9+
+- Java 21+
+- Docker & Docker Compose
+- Maven 3.9+
 
-### Local Development (Docker Compose)
-
-1.  **Clone the repository:**
-
-    ```bash
-    git clone https://github.com/your-username/spring-ai-rag-engine.git
-    cd spring-ai-rag-engine
-    ```
-
-2.  **Start Infrastructure (Kafka, Vector DB):**
-
-    ```bash
-    docker-compose up -d
-    ```
-
-3.  **Build & Run Services:**
-
-    ```bash
-    mvn clean install
-    # Terminal A
-    java -jar ingestion-service/target/ingestion-service.jar
-    # Terminal B
-    java -jar search-service/target/search-service.jar
-    ```
-
-### ☸️ Kubernetes Deployment
-
-See the `/k8s` directory for Helm charts and manifests.
+### Environment Variables
 
 ```bash
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/infra/  # Deploys Kafka & Vector DB
-kubectl apply -f k8s/apps/   # Deploys Spring Boot Apps
+# Ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2
+
+# Qdrant
+SPRING_AI_VECTORSTORE_QDRANT_HOST=localhost
+SPRING_AI_VECTORSTORE_QDRANT_PORT=6333
+SPRING_AI_VECTORSTORE_QDRANT_COLLECTION_NAME=documents
+
+# Kafka
+SPRING_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+
+# Elasticsearch
+ELASTICSEARCH_URL=http://localhost:9200
 ```
 
-## 📄 License
+### Local Development
 
-MIT
+```bash
+# 1. Clone
+git clone https://github.com/Peqchji/spring-ai-search-engine.git
+cd spring-ai-search-engine
+git checkout develop
+
+# 2. Start all infrastructure
+docker-compose up -d
+# Starts: Kafka, Qdrant, Elasticsearch, Ollama
+
+# 3. Build all modules
+mvn clean install
+
+# 4. Start each service (separate terminals)
+java -jar ingestion-service/target/ingestion-service.jar
+java -jar query-expansion-service/target/query-expansion-service.jar
+java -jar hybrid-retrieval-service/target/hybrid-retrieval-service.jar
+java -jar reranker-service/target/reranker-service.jar
+java -jar answer-generation-service/target/answer-generation-service.jar
+java -jar search-orchestrator/target/search-orchestrator.jar
+```
+
+### Quick Test
+
+```bash
+# Ingest a document
+curl -X POST http://localhost:8080/ingest \
+  -F "file=@/path/to/document.pdf"
+
+# Search
+curl -X POST http://localhost:8080/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the refund policy?"}'
+```
+
+---
+
+## ☸️ Kubernetes Deployment
+
+Kubernetes manifests are maintained in a separate repository:
+**[github.com/Peqchji/k8s-lab — branch: spring-ai-search-engine](https://github.com/Peqchji/k8s-lab/tree/spring-ai-search-engine)**
+
+```bash
+git clone -b spring-ai-search-engine https://github.com/Peqchji/k8s-lab.git
+cd k8s-lab
+
+kubectl apply -f namespace.yaml
+kubectl apply -f infra/    # Kafka, Qdrant, Elasticsearch, Ollama
+kubectl apply -f apps/     # All 6 services
+```
+
+Recommended HPA targets:
+
+| Service | Scale Driver | Min Replicas | Max Replicas |
+|---|---|---|---|
+| `hybrid-retrieval-service` | CPU / Kafka consumer lag | 2 | 10 |
+| `reranker-service` | CPU / Kafka consumer lag | 2 | 8 |
+| `answer-generation-service` | CPU / Kafka consumer lag | 1 | 6 |
+| `query-expansion-service` | CPU | 1 | 4 |
+| `search-orchestrator` | RPS | 2 | 8 |
+| `ingestion-service` | CPU / queue depth | 1 | 4 |
+
+---
+
+## 🗺 Development Roadmap
+
+| Phase | Goal | Status |
+|---|---|---|
+| 1 | Stabilize `ingestion-service` + Qdrant indexing end-to-end | ✅ In Progress |
+| 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | 🔲 Planned |
+| 3 | `hybrid-retrieval-service` — Qdrant + Elasticsearch + RRF | 🔲 Planned |
+| 4 | `reranker-service` — LLM scoring + fallback to RRF order | 🔲 Planned |
+| 5 | `answer-generation-service` — RAG generation | 🔲 Planned |
+| 6 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
+| 7 | Observability: per-stage tracing + Kafka lag dashboards | 🔲 Planned |
+
+---
+
+## 📄 Documentation
+
+- [`AGENTIC.md`](./AGENTIC.md) — Agentic pipeline design, LLM reranker details, Kafka topic contracts, and prompt templates
+
+---
+
+## 📜 License
+
+MIT License. See [LICENSE](./LICENSE) for details.
