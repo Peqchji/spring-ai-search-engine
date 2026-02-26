@@ -24,18 +24,18 @@ All three are decoupled from each other and from the retrieval layer — connect
 flowchart TD
     Q([User Query]) --> ORCH
 
-    ORCH[search-orchestrator\nCorrelation · State · Routing]
+    ORCH[search-orchestrator<br>Correlation · State · Routing]
 
-    ORCH -->|query.expand| S1["query-expansion-service\n🧠 LLM Agent\nExpand query into variants"]
+    ORCH -->|query.expand| S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
     S1 -->|query.expanded| ORCH
 
-    ORCH -->|retrieval.request| S2["hybrid-retrieval-service\n⚙️ Deterministic\nVector + BM25 + RRF"]
+    ORCH -->|retrieval.request| S2["hybrid-retrieval-service<br>⚙️ Deterministic<br>Vector + BM25 + RRF"]
     S2 -->|retrieval.results| ORCH
 
-    ORCH -->|rerank.request| S3["reranker-service\n🏆 LLM Agent — KEEP\nScore candidates · return top-5"]
+    ORCH -->|rerank.request| S3["reranker-service<br>🏆 LLM Agent — KEEP<br>Score candidates · return top-5"]
     S3 -->|rerank.results| ORCH
 
-    ORCH -->|answer.request| S4["answer-generation-service\n✍️ LLM Agent\nRAG generation"]
+    ORCH -->|answer.request| S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
     S4 -->|answer.results| ORCH
 
     ORCH --> R([Final Response])
@@ -137,11 +137,11 @@ It does **not** perform any LLM or retrieval work itself — it is a pure coordi
 
 ```mermaid
 stateDiagram-v2
-    [*] --> EXPANDING: POST /search received\npublish query.expand
-    EXPANDING --> RETRIEVING: query.expanded received\npublish retrieval.request
-    RETRIEVING --> RERANKING: retrieval.results received\npublish rerank.request
-    RERANKING --> GENERATING: rerank.results received\npublish answer.request
-    GENERATING --> DONE: answer.results received\nreturn response to user
+    [*] --> EXPANDING: POST /search received<br>publish query.expand
+    EXPANDING --> RETRIEVING: query.expanded received<br>publish retrieval.request
+    RETRIEVING --> RERANKING: retrieval.results received<br>publish rerank.request
+    RERANKING --> GENERATING: rerank.results received<br>publish answer.request
+    GENERATING --> DONE: answer.results received<br>return response to user
     EXPANDING --> FAILED: timeout
     RETRIEVING --> FAILED: timeout
     RERANKING --> FAILED: timeout / fallback to RRF order
@@ -184,6 +184,28 @@ public class PipelineOrchestrator {
     }
 }
 ```
+
+---
+
+## Stage 0: ingestion-service (Async Data Pipeline)
+
+### Purpose
+
+While not an LLM agentic search stage itself, the ingestion layer is foundational to providing the required vectors for the downstream retriever and generative models. It avoids blocking user HTTP limits during heavy document parsing (`Tika`) and LLM embedding by adopting the **Asynchronous Job Pattern**. It also implements the **Transactional Outbox Pattern** to guarantee reliable delivery of document chunks seamlessly into the event-driven Kafka core.
+
+### Architecture Flow
+
+1. **Upload**: Client sends `POST /ingest` with a multipart file.
+2. **Spool & Track**: The `IngestionFacade` temporarily spools the file to the OS disk and creates a `PENDING` job record in MongoDB (`ingestions` collection). It immediately returns a `202 Accepted` response with the Job ID.
+3. **Background Worker**: An `@Async` worker thread (`AsyncIngestionWorker`) picks up the file, extracts text, chunks it, and generates dense vector embeddings via Spring AI.
+4. **Outbox Pattern**: Upon completion, the worker atomically writes an `INGESTION_COMPLETED` event into the MongoDB `outbox_events` collection. 
+5. **Relay via Change Streams**: A background `OutboxRelay` service uses a MongoDB Change Stream to listen for new `outbox_events` continuously in real time. It relays the embedded chunks reliably into the `raw-docs` Kafka topic to be consumed by sink connectors.
+
+### Key Implementation Patterns
+
+- **Real-time Change Streams**: Guaranteed event publishing leveraging MongoDB's oplog capabilities.
+- **Configurability**: Zero magic strings — all collection identifiers, event types, retention periods, and chunking parameters map cleanly to the `.env` environment configuration.
+- **Lifecycle Management**: A `@Scheduled` routine (`TempFileCleanupTask`) securely sweeps the OS directory to delete aging spooled files older than 1 day so resources don't leak.
 
 ---
 
