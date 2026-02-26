@@ -142,12 +142,19 @@ spring-ai-search-engine/
 │
 ├── ingestion-service/
 │   ├── controller/
-│   │   └── IngestionController.java      # POST /ingest
-│   └── service/
-│       ├── DocumentLoaderService.java    # PDF / HTML / text parsing
-│       ├── ChunkingService.java          # TokenTextSplitter with overlap
-│       ├── EmbeddingService.java         # Spring AI EmbeddingClient → Ollama
-│       └── KafkaDocumentPublisher.java   # Publishes to raw-docs
+│   │   └── IngestionController.java      # POST /ingest (Returns 202 Accepted)
+│   ├── model/
+│   │   ├── IngestionMetadata.java        # Tracks Job status in MongoDB
+│   │   └── OutboxEvent.java              # Outbox pattern for reliable Kafka publishing
+│   ├── service/
+│   │   ├── IngestionFacade.java          # Coordinates spooling & background worker
+│   │   ├── AsyncIngestionWorker.java     # @Async worker for background execution
+│   │   ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
+│   │   ├── ChunkingService.java          # TokenTextSplitter with overlaps
+│   │   ├── EmbeddingService.java         # Spring AI EmbeddingClient → Ollama
+│   │   └── OutboxRelay.java              # Tails MongoDB change streams to Kafka
+│   └── kafka/
+│       └── KafkaDocumentPublisher.java   # Publishes chunks to raw-docs topic
 │
 ├── shared/                               # Shared library — models + events
 │   ├── event/
@@ -183,6 +190,8 @@ spring-ai-search-engine/
 - **🔍 Hybrid Search** — Qdrant vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
 - **🏆 LLM Reranking** — LLM-only reranker scores all 20 candidates and returns top-5 (no separate cross-encoder model)
 - **✍️ Grounded Answers** — RAG generation grounded in top-5 reranked documents via Ollama
+- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding is offloaded to background workers using the Job Pattern and Outbox Pattern, returning immediate `202 Accepted` responses.
+- **⚙️ Zero Magic Strings** — Fully centralized `.env` configuration via SpEL and `@Value` injections.
 - **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
 - **📊 Observability** — per-stage latency (Micrometer) and distributed tracing (OpenTelemetry)
 
@@ -257,7 +266,8 @@ java -jar search-orchestrator/target/search-orchestrator.jar
 ### Quick Test
 
 ```bash
-# Ingest a document
+# Ingest a document (Async)
+# Returns 202 Accepted with a tracking Job ID
 curl -X POST http://localhost:8080/ingest \
   -F "file=@/path/to/document.pdf"
 
