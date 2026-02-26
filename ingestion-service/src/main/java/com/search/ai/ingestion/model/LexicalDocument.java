@@ -17,7 +17,7 @@ import java.util.Map;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(indexName = AppConstants.INDEX_LEXICAL_DOCUMENTS)
+@Document(indexName = AppConstants.SPEL_INDEX_LEXICAL)
 public class LexicalDocument {
 
     @Id

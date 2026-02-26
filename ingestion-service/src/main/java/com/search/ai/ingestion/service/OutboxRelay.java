@@ -7,9 +7,9 @@ import com.search.ai.ingestion.kafka.KafkaDocumentPublisher;
 import com.search.ai.ingestion.model.LexicalDocument;
 import com.search.ai.ingestion.model.OutboxEvent;
 import com.search.ai.shared.model.DocumentEventDTO;
+import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.ingestion.repository.LexicalRepository;
 import com.search.ai.ingestion.repository.OutboxRepository;
-import com.search.ai.shared.util.constants.AppConstants;
 
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +22,7 @@ import org.springframework.data.mongodb.core.messaging.ChangeStreamRequest;
 import org.springframework.data.mongodb.core.messaging.MessageListenerContainer;
 import org.springframework.data.mongodb.core.messaging.Subscription;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -37,16 +38,21 @@ public class OutboxRelay {
     private final ObjectMapper objectMapper;
     private final MessageListenerContainer container;
 
+    @Value(AppConstants.PROP_COLLECTION_OUTBOX)
+    private String outboxCollection;
+
+    @Value(AppConstants.PROP_EVENT_INGESTION_COMPLETED)
+    private String eventTypeIngestionCompleted;
+
     @PostConstruct
     public void startWatching() {
-        log.info("Initializing MongoDB Watch on collection: {}",
-                AppConstants.COLLECTION_OUTBOX);
+        log.info("Initializing MongoDB Watch on collection: {}", outboxCollection);
         ChangeStreamRequest<OutboxEvent> request = ChangeStreamRequest.builder(
                 (Message<ChangeStreamDocument<org.bson.Document>, OutboxEvent> message) -> {
                     log.info("Captured event from Mongo Watch: {}", message.getBody().getId());
                     processEvent(message.getBody());
                 })
-                .collection(AppConstants.COLLECTION_OUTBOX)
+                .collection(outboxCollection)
                 .build();
 
         if (!container.isRunning()) {
@@ -65,7 +71,7 @@ public class OutboxRelay {
         try {
             log.info("Processing outbox event: {} of type: {}", event.getId(), event.getType());
 
-            if (AppConstants.EVENT_TYPE_INGESTION_COMPLETED.equals(event.getType())) {
+            if (eventTypeIngestionCompleted.equals(event.getType())) {
                 List<DocumentEventDTO> dtos = objectMapper.readValue(
                         event.getPayload(),
                         new TypeReference<List<DocumentEventDTO>>() {

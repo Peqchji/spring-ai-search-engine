@@ -4,25 +4,16 @@ public final class AppConstants {
     private AppConstants() {
     }
 
-    // Event Types
-    public static final String EVENT_TYPE_INGESTION_COMPLETED = "INGESTION_COMPLETED";
-
-    // MongoDB Collections
-    public static final String COLLECTION_OUTBOX = "outbox_events";
-    public static final String COLLECTION_DOCUMENTS = "documents";
-    public static final String COLLECTION_METADATA = "ingestions";
-
-    // Elasticsearch Indices
-    public static final String INDEX_LEXICAL_DOCUMENTS = "search_documents";
-
-    // Kafka Topics
-    public static final String TOPIC_RAW_DOCUMENTS = "raw-docs";
-
-    // Statuses
-    public static final String STATUS_COMPLETED = "COMPLETED";
-    public static final String STATUS_ERROR = "ERROR";
-
-    // Chunking Defaults
-    public static final int DEFAULT_CHUNK_SIZE = 800;
-    public static final int DEFAULT_CHUNK_OVERLAP = 100;
+    // ── SpEL Bindings for @Document and @Document Annotations ──
+    public static final String SPEL_COLLECTION_OUTBOX = "#{@environment.getProperty('app.mongodb.collections.outbox', 'outbox_events')}";
+    public static final String SPEL_COLLECTION_INGESTIONS = "#{@environment.getProperty('app.mongodb.collections.ingestions', 'ingestions')}";
+    public static final String SPEL_INDEX_LEXICAL = "#{@environment.getProperty('app.elasticsearch.indices.lexical', 'search_documents')}";
+    public static final String PROP_KAFKA_TOPIC_RAW_DOCS = "${app.kafka.topics.raw-docs:raw-docs}";
+    public static final String PROP_EVENT_INGESTION_COMPLETED = "${app.events.ingestion-completed:INGESTION_COMPLETED}";
+    public static final String PROP_TEMP_FILE_PREFIX = "${app.file.temp-prefix:async-ingest-}";
+    public static final String PROP_TEMP_FILE_RETENTION_DAYS = "${app.cleanup.temp-file-retention-days:1}";
+    public static final String PROP_TEMP_FILE_RATE_MS = "${app.cleanup.temp-file-rate-ms:3600000}";
+    public static final String PROP_CHUNKING_SIZE = "${app.chunking.size:800}";
+    public static final String PROP_CHUNKING_OVERLAP = "${app.chunking.overlap:100}";
+    public static final String PROP_COLLECTION_OUTBOX = "${app.mongodb.collections.outbox:outbox_events}";
 }
