@@ -1,0 +1,23 @@
+{
+    "name": "mongodb-source-connector",
+    "config": {
+        "connector.class": "com.mongodb.kafka.connect.MongoSourceConnector",
+        "tasks.max": "1",
+        "connection.uri": "mongodb://mongodb:27017/?replicaSet=rs0",
+        "database": "ingestion-db",
+        "collection": "documents",
+        "pipeline": "[{\"$match\": {\"operationType\": \"insert\"}}, {\"$project\": {\"id\": \"$fullDocument.id\", \"content\": \"$fullDocument.content\", \"_id\": 0}}]",
+        "publish.full.document.only": "false",
+        "topic.prefix": "mongo",
+        "output.format.key": "schema",
+        "output.format.value": "schema",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter.schemas.enable": "false",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "key.converter.schemas.enable": "false",
+        "transforms": "route",
+        "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+        "transforms.route.regex": ".*",
+        "transforms.route.replacement": "raw-docs"
+    }
+}
