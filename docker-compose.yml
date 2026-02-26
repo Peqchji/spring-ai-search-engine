@@ -165,7 +165,9 @@ services:
       - "${INGESTION_PORT:-8085}:8085"
     environment:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      SPRING_AI_OLLAMA_BASE_URL: http://ollama:11434
+      SPRING_AI_OPENAI_BASE_URL: http://localhost:8080
+      SPRING_AI_OPENAI_API_KEY: dummy_key_for_tei
+      SPRING_AI_OPENAI_EMBEDDING_OPTIONS_MODEL: nomic-ai/nomic-embed-text-v1.5
       SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/ingestion-db
       SPRING_AI_VECTORSTORE_MONGODB_COLLECTION_NAME: documents
       SPRING_AI_VECTORSTORE_MONGODB_PATH_NAME: embedding
@@ -174,8 +176,6 @@ services:
       KAFKA_CONNECT_URL: http://kafka-connect:8083
     depends_on:
       kafka:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
       mongodb:
         condition: service_healthy
@@ -187,7 +187,21 @@ services:
     mem_limit: 512m
     cpus: 0.5
 
+  tei-sidecar:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: tei-sidecar
+    network_mode: "service:ingestion-service"
+    command: ["--model-id", "nomic-ai/nomic-embed-text-v1.5"]
+    volumes:
+      - tei-data:/data
+    environment:
+      - PORT=8080
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 1.5
+
 volumes:
   es-data:
   ollama-data:
+  tei-data:
   mongo-data:
