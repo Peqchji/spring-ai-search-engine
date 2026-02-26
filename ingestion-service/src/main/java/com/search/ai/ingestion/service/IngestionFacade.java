@@ -3,6 +3,7 @@ package com.search.ai.ingestion.service;
 import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
+import com.search.ai.shared.util.constants.AppConstants;
 
 import com.search.ai.shared.constant.APIMessages;
 
@@ -11,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -26,7 +28,7 @@ public class IngestionFacade {
         private final IngestionMetadataRepository metadataRepository;
         private final AsyncIngestionWorker asyncIngestionWorker;
 
-        @org.springframework.beans.factory.annotation.Value("${app.file.temp-prefix:async-ingest-}")
+        @Value(AppConstants.PROP_TEMP_FILE_PREFIX)
         private String tempFilePrefix;
 
         /**

@@ -1,5 +1,6 @@
 package com.search.ai.ingestion.kafka;
 
+import com.search.ai.shared.util.constants.AppConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -16,7 +17,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class KafkaDocumentPublisher {
 
-    @Value("${app.kafka.topics.raw-docs:raw-docs}")
+    @Value(AppConstants.PROP_KAFKA_TOPIC_RAW_DOCS)
     private String topic;
 
     private final KafkaTemplate<String, Object> kafkaTemplate;

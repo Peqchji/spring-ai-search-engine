@@ -8,6 +8,7 @@ import com.search.ai.ingestion.model.OutboxEvent;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
 import com.search.ai.ingestion.repository.OutboxRepository;
 import com.search.ai.shared.model.DocumentEventDTO;
+import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.shared.constant.APIMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,7 +34,7 @@ public class AsyncIngestionWorker {
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
-    @Value("${app.events.ingestion-completed:INGESTION_COMPLETED}")
+    @Value(AppConstants.PROP_EVENT_INGESTION_COMPLETED)
     private String eventTypeIngestionCompleted;
 
     @Async

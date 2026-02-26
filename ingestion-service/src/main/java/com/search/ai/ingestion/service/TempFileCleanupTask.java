@@ -1,5 +1,6 @@
 package com.search.ai.ingestion.service;
 
+import com.search.ai.shared.util.constants.AppConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,10 +18,10 @@ import java.util.stream.Stream;
 @Service
 public class TempFileCleanupTask {
 
-    @Value("${app.cleanup.temp-file-retention-days:1}")
+    @Value(AppConstants.PROP_TEMP_FILE_RETENTION_DAYS)
     private long retentionDays;
 
-    @Value("${app.file.temp-prefix:async-ingest-}")
+    @Value(AppConstants.PROP_TEMP_FILE_PREFIX)
     private String tempFilePrefix;
 
     /**
@@ -30,7 +31,7 @@ public class TempFileCleanupTask {
      * up while allowing files to live securely longer than the active ingestion
      * request lifecycle.
      */
-    @Scheduled(fixedRateString = "${app.cleanup.temp-file-rate-ms:3600000}") // 1 hour default
+    @Scheduled(fixedRateString = AppConstants.PROP_TEMP_FILE_RATE_MS)
     public void cleanupOldTempFiles() {
         String tmpDir = System.getProperty("java.io.tmpdir");
         Path tmpDirPath = Path.of(tmpDir);

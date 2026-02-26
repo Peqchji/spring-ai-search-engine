@@ -1,5 +1,6 @@
 package com.search.ai.ingestion.service;
 
+import com.search.ai.shared.util.constants.AppConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
@@ -15,8 +16,8 @@ public class ChunkingService {
     private final TokenTextSplitter splitter;
 
     public ChunkingService(
-            @Value("${app.chunking.size:800}") int chunkSize,
-            @Value("${app.chunking.overlap:100}") int overlap) {
+            @Value(AppConstants.PROP_CHUNKING_SIZE) int chunkSize,
+            @Value(AppConstants.PROP_CHUNKING_OVERLAP) int overlap) {
         log.info("Initializing ChunkingService with size: {} and overlap: {}", chunkSize, overlap);
         this.splitter = new TokenTextSplitter(chunkSize, overlap, 1, 10000, true);
     }

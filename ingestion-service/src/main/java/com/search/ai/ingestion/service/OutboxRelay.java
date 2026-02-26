@@ -7,6 +7,7 @@ import com.search.ai.ingestion.kafka.KafkaDocumentPublisher;
 import com.search.ai.ingestion.model.LexicalDocument;
 import com.search.ai.ingestion.model.OutboxEvent;
 import com.search.ai.shared.model.DocumentEventDTO;
+import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.ingestion.repository.LexicalRepository;
 import com.search.ai.ingestion.repository.OutboxRepository;
 
@@ -37,10 +38,10 @@ public class OutboxRelay {
     private final ObjectMapper objectMapper;
     private final MessageListenerContainer container;
 
-    @Value("${app.mongodb.collections.outbox:outbox_events}")
+    @Value(AppConstants.PROP_COLLECTION_OUTBOX)
     private String outboxCollection;
 
-    @Value("${app.events.ingestion-completed:INGESTION_COMPLETED}")
+    @Value(AppConstants.PROP_EVENT_INGESTION_COMPLETED)
     private String eventTypeIngestionCompleted;
 
     @PostConstruct
