@@ -43,6 +43,7 @@ flowchart TD
         MDB[(MongoDB)]
         KAFKADOCS[[Kafka raw-docs Topic]]
         ES[(Elasticsearch Indexer)]
+        REDIS[(Redis<br>State Store)]
     end
 
     GW --> ORCH
@@ -55,6 +56,8 @@ flowchart TD
 
     ORCH -->|rank.request| S3
     S3 -->|rank.results| ORCH
+    
+    ORCH <-->|Read / Write state| REDIS
 
     %% Background Data Flow
     Q_Doc([New Document]) -.-> INGEST
@@ -164,12 +167,14 @@ stateDiagram-v2
 @Service
 public class PipelineOrchestrator {
 
-    private final Map<String, PipelineState> stateStore = new ConcurrentHashMap<>();
+    private final PipelineStateStore stateStore; // Backed by Redis
 
     public CompletableFuture<SearchResponse> search(String query) {
         String correlationId = UUID.randomUUID().toString();
         CompletableFuture<SearchResponse> future = new CompletableFuture<>();
-        stateStore.put(correlationId, new PipelineState(query, future));
+        
+        // Save initial state to Redis to allow distributed tracking
+        stateStore.save(correlationId, new PipelineState(query));
 
         publisher.publish("query.expand", new QueryExpandEvent(correlationId, query));
         return future;
@@ -178,6 +183,8 @@ public class PipelineOrchestrator {
     // Called by ResultConsumer when each topic result arrives
     public void onQueryExpanded(QueryExpandedEvent event) {
         PipelineState state = stateStore.get(event.correlationId());
+        // Update state in Redis
+        stateStore.save(event.correlationId(), state.withExpanded());
         publisher.publish("retrieval.request", new RetrievalRequestEvent(
             event.correlationId(), event.originalQuery(), event.variants(), 20
         ));
@@ -186,7 +193,9 @@ public class PipelineOrchestrator {
     public void onRetrievalResults(RetrievalResultEvent event) { ... }
     
     public void onRankResults(RankResultEvent event) {
-        PipelineState state = stateStore.remove(event.correlationId());
+        PipelineState state = stateStore.get(event.correlationId());
+        stateStore.delete(event.correlationId());
+        // resolve future based on correlationId mapping (local memory or SSE)
         state.future().complete(new SearchResponse(event.ranked()));
     }
 }

@@ -47,6 +47,7 @@ flowchart TD
         OL[[Ollama<br>LLM Runtime]]
         TEI[[HuggingFace TEI<br>Sidecar]]
         K[[Kafka Connectors]]
+        REDIS[(Redis<br>State Store)]
     end
 
     U <-->|Search Request / Response| GW
@@ -62,6 +63,7 @@ flowchart TD
     HR <-->|vector search| MDB
     
     ORCH <-->|Kafka topic: rank.request / results| RANK
+    ORCH <-->|Read / Write state| REDIS
 
     IS --> MDB
     IS -.->|embeddings| TEI
@@ -124,7 +126,7 @@ spring-ai-search-engine/
 │   │   └── SearchController.java         # POST /search
 │   ├── pipeline/
 │   │   ├── PipelineOrchestrator.java     # Drives Kafka stages by correlationId
-│   │   └── PipelineStateStore.java       # In-memory state per in-flight request
+│   │   └── PipelineStateStore.java       # Redis state per in-flight request
 │   └── kafka/
 │       ├── SearchRequestPublisher.java
 │       └── ResultConsumer.java           # Listens on all *.results topics
