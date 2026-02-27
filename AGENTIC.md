@@ -503,8 +503,8 @@ search:
 | Service | Failure Mode | Fallback |
 |---|---|---|
 | `query-expansion-service` | LLM timeout / parse error | Publish original query only as single variant |
-| `hybrid-retrieval-service` | Elasticsearch down | Fall back to Qdrant vector search only |
-| `hybrid-retrieval-service` | Qdrant down | Fall back to Elasticsearch BM25 only |
+| `hybrid-retrieval-service` | Elasticsearch down | Fall back to MongoDB vector search only |
+| `hybrid-retrieval-service` | MongoDB down | Fall back to Elasticsearch BM25 only |
 | `reranker-service` | LLM timeout / parse error | Return top-5 from RRF order as-is |
 | `answer-generation-service` | LLM timeout | Return top document content directly as answer |
 | `search-orchestrator` | Stage timeout (any) | Return partial result with error flag |
