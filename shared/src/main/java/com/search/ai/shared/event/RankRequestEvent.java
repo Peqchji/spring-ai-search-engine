@@ -4,8 +4,8 @@ import com.search.ai.shared.model.DocumentCandidate;
 
 import java.util.List;
 
-public record RerankRequestEvent(
+public record RankRequestEvent(
         String correlationId,
         String query,
-        List<DocumentCandidate> candidates
-) {}
+        List<DocumentCandidate> candidates) {
+}

@@ -4,7 +4,7 @@ import com.search.ai.shared.model.RankedDocument;
 
 import java.util.List;
 
-public record RerankResultEvent(
+public record RankResultEvent(
         String correlationId,
-        List<RankedDocument> ranked
-) {}
+        List<RankedDocument> ranked) {
+}
