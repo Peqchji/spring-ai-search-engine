@@ -15,4 +15,5 @@ public class DocumentEventDTO {
     private String id;
     private String content;
     private Map<String, Object> metadata;
+    private java.util.List<Double> embedding;
 }

@@ -11,7 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -37,7 +37,6 @@ public class IngestionFacade {
          * parsing,
          * embedding, and database storing is offloaded to a background thread.
          */
-        @Transactional
         public IngestionResult ingest(MultipartFile file) {
                 log.info("Accepting file for ingestion: {} ({})", file.getOriginalFilename(), file.getContentType());
 

@@ -23,13 +23,14 @@ spring:
     elasticsearch:
       uris: ${SPRING_ELASTICSEARCH_URIS:http://localhost:9200}
 
-  # Spring AI — Ollama (embedding model)
+  # Spring AI — OpenAI (embedding model)
   ai:
-    ollama:
-      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    openai:
+      api-key: ${SPRING_AI_OPENAI_API_KEY:dummy_key_for_tei}
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:http://localhost:8080}
       embedding:
         options:
-          model: ${OLLAMA_EMBEDDING_MODEL:nomic-embed-text}
+          model: ${SPRING_AI_OPENAI_EMBEDDING_OPTIONS_MODEL:nomic-ai/nomic-embed-text-v1.5}
 
     # Spring AI — MongoDB vector store
     vectorstore:
