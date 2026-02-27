@@ -24,7 +24,8 @@ All three are decoupled from each other and from the retrieval layer — connect
 flowchart TD
     Q([User Query]) --> ORCH
 
-    ORCH[search-orchestrator<br>Correlation · State · Routing]
+    ORCH[search-orchestrator<br>Pipeline Coordinator]
+    GW[api-gateway<br>Front Door] --> ORCH
 
     ORCH -->|query.expand| S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
     S1 -->|query.expanded| ORCH
@@ -39,11 +40,14 @@ flowchart TD
     S4 -->|answer.results| ORCH
 
     %% Background Data Flow
-    Q_Doc([New Document]) -.-> INGEST["ingestion-service<br>Async Job / Outbox"]
+    Q_Doc([New Document]) -.-> INGEST["ingestion-service<br>Load · Embed · Input"]
     INGEST -.->|vectorize| TEI[[HuggingFace TEI Sidecar<br>High-speed Embeddings]]
-    INGEST -.->|raw-docs| KAFKA[[Kafka]]
+    INGEST -.->|insert| MDB[(MongoDB)]
+    MDB -.->|Source Connector| KAFKADOCS[[Kafka raw-docs Topic]]
+    KAFKADOCS -.->|Sink Connector| ES[(Elasticsearch Indexer)]
     
     ORCH --> R([Final Response])
+    GW --> R
 ```
 
 ---
@@ -130,11 +134,12 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 
 ---
 
-## search-orchestrator
+## api-gateway & search-orchestrator
 
 ### Responsibility
 
-The orchestrator is the sole entry point for search. It drives the pipeline by publishing to each stage's input topic in sequence and waiting for the corresponding result topic, matched by `correlationId`.
+`api-gateway` acts as the front door edge proxy (routing `/ingest` and `/search`).
+`search-orchestrator` drives the background pipeline by publishing to each stage's input topic in sequence and waiting for the corresponding result topic, matched by `correlationId`.
 
 It does **not** perform any LLM or retrieval work itself — it is a pure coordinator.
 
@@ -142,7 +147,8 @@ It does **not** perform any LLM or retrieval work itself — it is a pure coordi
 
 ```mermaid
 stateDiagram-v2
-    [*] --> EXPANDING: POST /search received<br>publish query.expand
+    [*] --> GATEWAY: POST /search received
+    GATEWAY --> EXPANDING: Forward to Orchestrator<br>publish query.expand
     EXPANDING --> RETRIEVING: query.expanded received<br>publish retrieval.request
     RETRIEVING --> RERANKING: retrieval.results received<br>publish rerank.request
     RERANKING --> GENERATING: rerank.results received<br>publish answer.request
@@ -202,13 +208,13 @@ While not an LLM agentic search stage itself, the ingestion layer is foundationa
 
 1. **Upload**: Client sends `POST /ingest` with a multipart file.
 2. **Spool & Track**: The `IngestionFacade` temporarily spools the file to the OS disk and creates a `PENDING` job record in MongoDB (`ingestions` collection). It immediately returns a `202 Accepted` response with the Job ID.
-3. **Background Worker**: An `@Async` worker thread (`AsyncIngestionWorker`) picks up the file, extracts text, chunks it, and generates dense vector embeddings via Spring AI.
-4. **Outbox Pattern**: Upon completion, the worker atomically writes an `INGESTION_COMPLETED` event into the MongoDB `outbox_events` collection. 
-5. **Relay via Change Streams**: A background `OutboxRelay` service uses a MongoDB Change Stream to listen for new `outbox_events` continuously in real time. It relays the embedded chunks reliably into the `raw-docs` Kafka topic to be consumed by sink connectors.
+3. **Background Worker**: An `@Async` worker thread (`AsyncIngestionWorker`) picks up the file, extracts text, chunks it, and generates dense vector embeddings via the `TEI Sidecar`.
+4. **Persist**: Upon completion of embedding, chunks are inserted natively via Spring AI into the `documents` collection in MongoDB alongside vector bounds.
+5. **Relay via Connectors**: A `mongodb-source-connector` deployed in the Kafka Connect framework securely tails the `documents` collection asynchronously, streaming updates into the `raw-docs` Kafka topic. An `elasticsearch-sink-connector` natively digests these embeddings directly.
 
 ### Key Implementation Patterns
 
-- **Real-time Change Streams**: Guaranteed event publishing leveraging MongoDB's oplog capabilities.
+- **Real-time Change Streams**: Guaranteed event publishing leveraging MongoDB's change stream tailing integrated right into Kafka Source Connect.
 - **Configurability**: Zero magic strings — all collection identifiers, event types, retention periods, and chunking parameters map cleanly to the `.env` environment configuration.
 - **Lifecycle Management**: A `@Scheduled` routine (`TempFileCleanupTask`) securely sweeps the OS directory to delete aging spooled files older than 1 day so resources don't leak.
 

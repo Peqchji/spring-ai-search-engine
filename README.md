@@ -26,9 +26,14 @@ The pipeline covers the full journey from user intent to grounded LLM answers �
 flowchart TD
     U([User]) --> GW
 
-    GW[search-orchestrator\nAPI Gateway · Pipeline Coordinator]
+    GW[api-gateway\nFront Door]
+    
+    ORCH[search-orchestrator\nPipeline Coordinator]
 
-    GW -->|topic: query.expand| QE[query-expansion-service\n🧠 LLM Query Rewrite]
+    GW -->|/search| ORCH
+    GW -->|/ingest| IS
+
+    ORCH -->|topic: query.expand| QE[query-expansion-service\n🧠 LLM Query Rewrite]
     QE -->|topic: query.expanded| GW
 
     GW -->|topic: retrieval.request| HR[hybrid-retrieval-service\n🔍 Vector + BM25 + RRF]
@@ -37,10 +42,10 @@ flowchart TD
     GW -->|topic: rerank.request| RR[reranker-service\n🏆 LLM Reranker]
     RR -->|topic: rerank.results| GW
 
-    GW -->|topic: answer.request| AG[answer-generation-service\n✍️ RAG Answer]
-    AG -->|topic: answer.results| GW
+    ORCH -->|topic: answer.request| AG[answer-generation-service\n✍️ RAG Answer]
+    AG -->|topic: answer.results| ORCH
 
-    GW --> U
+    ORCH --> GW
 
     HR <-->|vector search| MDB[(MongoDB)]
     HR <-->|keyword search| ES[(Elasticsearch)]
@@ -48,8 +53,8 @@ flowchart TD
     QE & RR & AG <-->|inference| OL[[Ollama\nLLM Runtime]]
     IS <-->|embeddings| TEI[[HuggingFace TEI\nSidecar]]
 
-    IS[ingestion-service\nLoad · Chunk · Embed · Index] -->|topic: raw-docs| K[[Kafka]]
-    K -->|embed sink| MDB
+    IS[ingestion-service\nLoad · Chunk · Embed] --> MDB
+    MDB -->|source tailing| K[[Kafka]]
     K -->|index sink| ES
 ```
 
@@ -58,16 +63,18 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     actor User
-    participant GW as search-orchestrator
+    participant GW as api-gateway
+    participant ORCH as search-orchestrator
     participant QE as query-expansion-service
     participant HR as hybrid-retrieval-service
     participant RR as reranker-service
     participant AG as answer-generation-service
 
     User->>GW: POST /search {query}
+    GW->>ORCH: forwards request
 
-    GW->>QE: topic: query.expand
-    QE-->>GW: topic: query.expanded {variants[]}
+    ORCH->>QE: topic: query.expand
+    QE-->>ORCH: topic: query.expanded {variants[]}
 
     GW->>HR: topic: retrieval.request {variants[]}
     HR-->>GW: topic: retrieval.results {candidates[20]}
@@ -75,9 +82,10 @@ sequenceDiagram
     GW->>RR: topic: rerank.request {query, candidates[20]}
     RR-->>GW: topic: rerank.results {ranked[5]}
 
-    GW->>AG: topic: answer.request {query, ranked[5]}
-    AG-->>GW: topic: answer.results {answer, sources}
+    ORCH->>AG: topic: answer.request {query, ranked[5]}
+    AG-->>ORCH: topic: answer.results {answer, sources}
 
+    ORCH-->>GW: SearchResponse
     GW-->>User: SearchResponse
 ```
 
@@ -87,12 +95,13 @@ sequenceDiagram
 
 | Service | Responsibility | Consumes | Produces |
 |---|---|---|---|
-| `search-orchestrator` | API entry point, pipeline coordination, correlation tracking | `*.results` topics | `*.request` topics |
+| `api-gateway` | Edge proxy, routes incoming traffic | — | — |
+| `search-orchestrator` | Pipeline coordination, correlation tracking | `*.results` topics | `*.request` topics |
 | `query-expansion-service` | LLM rewrites query into 2–3 semantic variants | `query.expand` | `query.expanded` |
 | `hybrid-retrieval-service` | Dense vector + BM25 search, RRF merge | `retrieval.request` | `retrieval.results` |
 | `reranker-service` | LLM scores all candidates, returns top-5 | `rerank.request` | `rerank.results` |
 | `answer-generation-service` | RAG: LLM generates grounded answer from top-5 docs | `answer.request` | `answer.results` |
-| `ingestion-service` | Load, chunk, embed, index to MongoDB + Elasticsearch | — | `raw-docs` |
+| `ingestion-service` | Load, chunk, embed, insert to MongoDB | — | `mongo-documents` (via Source Connector) |
 
 ---
 
@@ -101,9 +110,12 @@ sequenceDiagram
 ```
 spring-ai-search-engine/
 │
-├── search-orchestrator/                  # API gateway + pipeline coordinator
+├── api-gateway/                            # Edge Gateway / Front Door
+│   └── application.yml                   # Routes /ingest and /search
+│
+├── search-orchestrator/                  # Pipeline coordinator
 │   ├── controller/
-│   │   └── SearchController.java         # POST /search  POST /ingest (proxy)
+│   │   └── SearchController.java         # POST /search
 │   ├── pipeline/
 │   │   ├── PipelineOrchestrator.java     # Drives Kafka stages by correlationId
 │   │   └── PipelineStateStore.java       # In-memory state per in-flight request
@@ -148,14 +160,12 @@ spring-ai-search-engine/
 │   │   ├── IngestionMetadata.java        # Tracks Job status in MongoDB
 │   │   └── OutboxEvent.java              # Outbox pattern for reliable Kafka publishing
 │   ├── service/
-│   │   ├── IngestionFacade.java          # Coordinates spooling & background worker
-│   │   ├── AsyncIngestionWorker.java     # @Async worker for background execution
-│   │   ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
-│   │   ├── ChunkingService.java          # TokenTextSplitter with overlaps
-│   │   ├── EmbeddingService.java         # Spring AI EmbeddingClient → Ollama
-│   │   └── OutboxRelay.java              # Tails MongoDB change streams to Kafka
-│   └── kafka/
-│       └── KafkaDocumentPublisher.java   # Publishes chunks to raw-docs topic
+│       ├── IngestionFacade.java          # Coordinates spooling & background worker
+│   │       ├── AsyncIngestionWorker.java     # @Async worker for extraction and embedding
+│   │       ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
+│   │       ├── ChunkingService.java          # TokenTextSplitter with overlaps
+│   │       └── EmbeddingService.java         # Spring AI EmbeddingClient (TEI) → MongoDB
+│   └── kafka/                              # Kafka Configurations
 │
 ├── shared/                               # Shared library — models + events
 │   ├── event/
@@ -191,7 +201,7 @@ spring-ai-search-engine/
 - **🔍 Hybrid Search** — MongoDB vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
 - **🏆 LLM Reranking** — LLM-only reranker scores all 20 candidates and returns top-5 (no separate cross-encoder model)
 - **✍️ Grounded Answers** — RAG generation grounded in top-5 reranked documents via Ollama
-- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding is offloaded to background workers using the Job Pattern and Outbox Pattern, returning immediate `202 Accepted` responses.
+- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding via TEI sidecar are offloaded to background workers returning immediate `202 Accepted`. MongoDB Kafka Source Connectors automatically stream these embedded chunks to Elasticsearch without `outbox` application code.
 - **⚙️ Zero Magic Strings** — Fully centralized `.env` configuration via SpEL and `@Value` injections.
 - **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
 - **📊 Observability** — per-stage latency (Micrometer) and distributed tracing (OpenTelemetry)
