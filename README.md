@@ -49,6 +49,7 @@ flowchart TD
         K[[Kafka Connectors]]
         REDIS[(Redis<br>State Store)]
     end
+    ORCH <-->|Read / Write state| REDIS
 
     U <-->|Search Request / Response| GW
 
@@ -63,7 +64,6 @@ flowchart TD
     HR <-->|vector search| MDB
     
     ORCH <-->|Kafka topic: rank.request / results| RANK
-    ORCH <-->|Read / Write state| REDIS
 
     IS --> MDB
     IS -.->|embeddings| TEI
