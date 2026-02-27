@@ -42,14 +42,14 @@ flowchart TD
 
     GW --> U
 
-    HR <-->|vector search| QD[(Qdrant)]
+    HR <-->|vector search| MDB[(MongoDB)]
     HR <-->|keyword search| ES[(Elasticsearch)]
 
     QE & RR & AG <-->|inference| OL[[Ollama\nLLM Runtime]]
     IS <-->|embeddings| TEI[[HuggingFace TEI\nSidecar]]
 
     IS[ingestion-service\nLoad · Chunk · Embed · Index] -->|topic: raw-docs| K[[Kafka]]
-    K -->|embed sink| QD
+    K -->|embed sink| MDB
     K -->|index sink| ES
 ```
 
@@ -92,7 +92,7 @@ sequenceDiagram
 | `hybrid-retrieval-service` | Dense vector + BM25 search, RRF merge | `retrieval.request` | `retrieval.results` |
 | `reranker-service` | LLM scores all candidates, returns top-5 | `rerank.request` | `rerank.results` |
 | `answer-generation-service` | RAG: LLM generates grounded answer from top-5 docs | `answer.request` | `answer.results` |
-| `ingestion-service` | Load, chunk, embed, index to Qdrant + Elasticsearch | — | `raw-docs` |
+| `ingestion-service` | Load, chunk, embed, index to MongoDB + Elasticsearch | — | `raw-docs` |
 
 ---
 
@@ -123,7 +123,7 @@ spring-ai-search-engine/
 │   │   ├── RetrievalRequestConsumer.java # Listens: retrieval.request
 │   │   └── RetrievalResultPublisher.java # Publishes: retrieval.results
 │   └── service/
-│       ├── VectorSearchService.java      # Qdrant similarity search
+│       ├── VectorSearchService.java      # MongoDB similarity search
 │       ├── BM25SearchService.java        # Elasticsearch keyword search
 │       └── RRFMerger.java                # Reciprocal Rank Fusion
 │
@@ -188,7 +188,7 @@ spring-ai-search-engine/
 - **📐 Independent Scalability** — scale `reranker-service` and `hybrid-retrieval-service` separately with their own HPAs
 - **🔗 Correlation Tracking** — orchestrator tracks each request end-to-end via a `correlationId` threaded through all Kafka events
 - **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, improving recall
-- **🔍 Hybrid Search** — Qdrant vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
+- **🔍 Hybrid Search** — MongoDB vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
 - **🏆 LLM Reranking** — LLM-only reranker scores all 20 candidates and returns top-5 (no separate cross-encoder model)
 - **✍️ Grounded Answers** — RAG generation grounded in top-5 reranked documents via Ollama
 - **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding is offloaded to background workers using the Job Pattern and Outbox Pattern, returning immediate `202 Accepted` responses.
@@ -205,7 +205,7 @@ spring-ai-search-engine/
 | Language | Java 21 |
 | Framework | Spring Boot 3.3+, Spring AI 1.0 |
 | Messaging | Apache Kafka |
-| Vector Store | Qdrant |
+| Vector Store | MongoDB |
 | Keyword Search | Elasticsearch (BM25) |
 | Generative LLM | Ollama (local) |
 | Embedding API | HuggingFace TEI (Sidecar) |
@@ -229,10 +229,11 @@ spring-ai-search-engine/
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2
 
-# Qdrant
-SPRING_AI_VECTORSTORE_QDRANT_HOST=localhost
-SPRING_AI_VECTORSTORE_QDRANT_PORT=6333
-SPRING_AI_VECTORSTORE_QDRANT_COLLECTION_NAME=documents
+# MongoDB Vector Store
+SPRING_DATA_MONGODB_URI=mongodb://localhost:27017/ingestion-db
+SPRING_AI_VECTORSTORE_MONGODB_COLLECTION_NAME=documents
+SPRING_AI_VECTORSTORE_MONGODB_PATH_NAME=embedding
+SPRING_AI_VECTORSTORE_MONGODB_INDEX_NAME=vector_index
 
 # Kafka
 SPRING_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
@@ -291,7 +292,7 @@ git clone -b spring-ai-search-engine https://github.com/Peqchji/k8s-lab.git
 cd k8s-lab
 
 kubectl apply -f namespace.yaml
-kubectl apply -f infra/    # Kafka, Qdrant, Elasticsearch, Ollama
+kubectl apply -f infra/    # Kafka, MongoDB, Elasticsearch, Ollama
 kubectl apply -f apps/     # All 6 services
 ```
 
@@ -312,9 +313,9 @@ Recommended HPA targets:
 
 | Phase | Goal | Status |
 |---|---|---|
-| 1 | Stabilize `ingestion-service` + Qdrant indexing end-to-end | ✅ In Progress |
+| 1 | Stabilize `ingestion-service` + MongoDB indexing end-to-end | ✅ In Progress |
 | 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | 🔲 Planned |
-| 3 | `hybrid-retrieval-service` — Qdrant + Elasticsearch + RRF | 🔲 Planned |
+| 3 | `hybrid-retrieval-service` — MongoDB + Elasticsearch + RRF | 🔲 Planned |
 | 4 | `reranker-service` — LLM scoring + fallback to RRF order | 🔲 Planned |
 | 5 | `answer-generation-service` — RAG generation | 🔲 Planned |
 | 6 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
