@@ -11,8 +11,7 @@ A simple RAG system retrieves documents and calls an LLM once. This system uses 
 | Service | Agent Role | LLM Task |
 |---|---|---|
 | `query-expansion-service` | Planning | Rewrite and expand the user query before search |
-| `reranker-service` | Evaluation | Score and rank retrieved candidates by relevance |
-| `answer-generation-service` | Synthesis | Produce a grounded answer from top-N documents |
+| `ranker-service` | Evaluation | Score and rank retrieved candidates by relevance using LTR |
 
 All three are decoupled from each other and from the retrieval layer — connected only via Kafka topics, orchestrated by `search-orchestrator`.
 
@@ -32,8 +31,7 @@ flowchart TD
         ORCH[search-orchestrator<br>Pipeline Coordinator]
         S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
         S2["hybrid-retrieval-service<br>⚙️ Deterministic<br>Vector + BM25 + RRF"]
-        S3["reranker-service<br>🏆 LLM Agent — KEEP<br>Score candidates · return top-5"]
-        S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
+        S3["ranker-service<br>🏆 LTR Agent<br>Score candidates · return top-5"]
     end
 
     subgraph Background Ingestion
@@ -55,11 +53,8 @@ flowchart TD
     ORCH -->|retrieval.request| S2
     S2 -->|retrieval.results| ORCH
 
-    ORCH -->|rerank.request| S3
-    S3 -->|rerank.results| ORCH
-
-    ORCH -->|answer.request| S4
-    S4 -->|answer.results| ORCH
+    ORCH -->|rank.request| S3
+    S3 -->|rank.results| ORCH
 
     %% Background Data Flow
     Q_Doc([New Document]) -.-> INGEST
@@ -116,7 +111,7 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 }
 ```
 
-### `rerank.request`
+### `rank.request`
 ```json
 {
   "correlationId": "uuid",
@@ -125,32 +120,14 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 }
 ```
 
-### `rerank.results`
+### `rank.results`
 ```json
 {
   "correlationId": "uuid",
   "ranked": [
-    { "id": "doc-uuid", "content": "...", "llmScore": 9.2 },
-    { "id": "doc-uuid", "content": "...", "llmScore": 7.8 }
+    { "id": "doc-uuid", "content": "...", "score": 9.2 },
+    { "id": "doc-uuid", "content": "...", "score": 7.8 }
   ]
-}
-```
-
-### `answer.request`
-```json
-{
-  "correlationId": "uuid",
-  "query": "can I get money back",
-  "context": [ ...top-5 ranked documents... ]
-}
-```
-
-### `answer.results`
-```json
-{
-  "correlationId": "uuid",
-  "answer": "Yes, you can request a refund within 30 days...",
-  "sources": [ { "id": "doc-uuid", "excerpt": "..." } ]
 }
 ```
 
@@ -172,13 +149,11 @@ stateDiagram-v2
     [*] --> GATEWAY: POST /search received
     GATEWAY --> EXPANDING: Forward to Orchestrator<br>publish query.expand
     EXPANDING --> RETRIEVING: query.expanded received<br>publish retrieval.request
-    RETRIEVING --> RERANKING: retrieval.results received<br>publish rerank.request
-    RERANKING --> GENERATING: rerank.results received<br>publish answer.request
-    GENERATING --> DONE: answer.results received<br>return response to user
+    RETRIEVING --> RANKING: retrieval.results received<br>publish rank.request
+    RANKING --> DONE: rank.results received<br>return response to user
     EXPANDING --> FAILED: timeout
     RETRIEVING --> FAILED: timeout
-    RERANKING --> FAILED: timeout / fallback to RRF order
-    GENERATING --> FAILED: timeout
+    RANKING --> FAILED: timeout / fallback to RRF order
     DONE --> [*]
     FAILED --> [*]
 ```
@@ -209,11 +184,10 @@ public class PipelineOrchestrator {
     }
 
     public void onRetrievalResults(RetrievalResultEvent event) { ... }
-    public void onRerankResults(RerankResultEvent event) { ... }
-
-    public void onAnswerResults(AnswerResultEvent event) {
+    
+    public void onRankResults(RankResultEvent event) {
         PipelineState state = stateStore.remove(event.correlationId());
-        state.future().complete(new SearchResponse(event.answer(), event.sources()));
+        state.future().complete(new SearchResponse(event.ranked()));
     }
 }
 ```
@@ -358,67 +332,36 @@ public List<Document> merge(List<Document> vectorDocs, List<Document> keywordDoc
 
 ---
 
-## Stage 3: reranker-service ✅ LLM-only (Kept)
+## Stage 3: ranker-service ✅ LTR (Learn to Rank)
 
 ### Purpose
 
-After hybrid retrieval, we have up to 20 candidate documents. Not all are truly relevant. The reranker re-evaluates each document against the **original query** using an LLM and returns only the top-5 most relevant.
-
-Kept as **LLM-only** — no cross-encoder models, no learned weights. The same Ollama LLM is repurposed as a relevance judge.
+After hybrid retrieval, we have up to 20 candidate documents. Not all are truly relevant. The ranker re-evaluates each document against the **original query** using a Learn to Rank (LTR) model and returns only the top-5 most relevant.
 
 ### Kafka Flow
 
 ```
-Consumes: rerank.request
-Produces: rerank.results
+Consumes: rank.request
+Produces: rank.results
 ```
 
 ### Implementation
 
 ```java
-@KafkaListener(topics = "rerank.request")
-public void consume(RerankRequestEvent event) {
+@KafkaListener(topics = "rank.request")
+public void consume(RankRequestEvent event) {
     List<RankedDocument> ranked;
     try {
-        ranked = reranker.rerank(event.query(), event.candidates());
+        ranked = documentRanker.rank(event.query(), event.candidates());
     } catch (Exception e) {
         // Fallback: return original RRF order, top-5
         ranked = event.candidates().stream().limit(5)
             .map(d -> new RankedDocument(d, 0.0))
             .toList();
     }
-    publisher.send("rerank.results", new RerankResultEvent(event.correlationId(), ranked));
+    publisher.send("rank.results", new RankResultEvent(event.correlationId(), ranked));
 }
 ```
-
-### LLM Prompt
-
-```java
-private static final String RERANK_PROMPT = """
-    You are a relevance judge. Given a search query and a list of document passages,
-    score each passage from 0 to 10 based on how well it answers the query.
-    
-    Query: {query}
-    
-    Passages:
-    {passages}
-    
-    Scoring guide:
-    - 10 = directly and completely answers the query
-    - 5  = partially relevant or tangentially related
-    - 0  = irrelevant
-    
-    Output ONLY valid JSON — no explanation:
-    [{"id": "...", "score": N}, ...]
-    """;
-```
-
-### Design Decisions
-
-- **Batch scoring** — all 20 candidates scored in a single LLM call to reduce Ollama round-trips
-- **Truncation** — passages truncated to ~300 chars each to stay within context limits
-- **Score threshold** — documents scoring below 3 are discarded before returning top-5
-- **Fallback** — any LLM timeout or parse error falls back to the original RRF-ranked order
 
 ### Output Model
 
@@ -427,69 +370,17 @@ public record RankedDocument(
     String id,
     String content,
     Map<String, Object> metadata,
-    double llmScore    // 0–10
+    double score
 ) {}
 ```
 
 ---
 
-## Stage 4: answer-generation-service
-
-### Purpose
-
-Takes the top-5 reranked documents as context and generates a grounded natural language answer using Ollama via Spring AI RAG.
-
-### Kafka Flow
-
-```
-Consumes: answer.request
-Produces: answer.results
-```
-
-### Implementation
-
-```java
-@KafkaListener(topics = "answer.request")
-public void consume(AnswerRequestEvent event) {
-    String context = event.context().stream()
-        .map(RankedDocument::content)
-        .collect(Collectors.joining("\n\n---\n\n"));
-
-    String answer = chatClient.prompt()
-        .user(u -> u.text(RAG_PROMPT)
-            .param("question", event.query())
-            .param("context", context))
-        .call()
-        .content();
-
-    publisher.send("answer.results", new AnswerResultEvent(
-        event.correlationId(), answer, event.context()
-    ));
-}
-```
-
-### LLM Prompt
-
-```java
-private static final String RAG_PROMPT = """
-    You are a helpful assistant. Answer the user's question using ONLY the
-    provided context. If the context does not contain enough information,
-    say so clearly — do not fabricate.
-    
-    Context:
-    {context}
-    
-    Question: {question}
-    
-    Answer:
-    """;
-```
-
 ---
 
 ## Ollama Configuration
 
-All three LLM services share the same Ollama runtime but can use different models per stage:
+Ollama is used by the `query-expansion-service` for intelligent query rewriting before search:
 
 ```yaml
 # application.yml (shared base)
@@ -514,14 +405,6 @@ search:
   pipeline:
     expansion:
       model: llama3.2
-    reranker:
-      model: llama3.2           # swap to a larger model for better precision
-      score-threshold: 3.0
-      fallback-on-error: true
-    generation:
-      model: llama3.2
-      num-predict: 2000
-      temperature: 0.3          # slight creativity for answer phrasing
 ```
 
 ---
@@ -533,8 +416,7 @@ search:
 | `query-expansion-service` | LLM timeout / parse error | Publish original query only as single variant |
 | `hybrid-retrieval-service` | Elasticsearch down | Fall back to MongoDB vector search only |
 | `hybrid-retrieval-service` | MongoDB down | Fall back to Elasticsearch BM25 only |
-| `reranker-service` | LLM timeout / parse error | Return top-5 from RRF order as-is |
-| `answer-generation-service` | LLM timeout | Return top document content directly as answer |
+| `ranker-service` | LTR model error | Return top-5 from RRF order as-is |
 | `search-orchestrator` | Stage timeout (any) | Return partial result with error flag |
 
 ---
@@ -544,9 +426,9 @@ search:
 Each service emits Micrometer metrics and OpenTelemetry spans. The `correlationId` is propagated as a trace attribute across all Kafka hops.
 
 ```java
-// Example annotation on reranker
-@Observed(name = "reranker.score", contextualName = "llm-rerank")
-public List<RankedDocument> rerank(String query, List<Document> candidates) { ... }
+// Example annotation on ranker
+@Observed(name = "ranker.score", contextualName = "ltr-rank")
+public List<RankedDocument> rank(String query, List<Document> candidates) { ... }
 ```
 
 Key metrics per service:
@@ -556,7 +438,7 @@ Key metrics per service:
 | `pipeline.stage.latency` | Time per Kafka hop (tagged by service) |
 | `llm.tokens.used` | Token count per Ollama call |
 | `retrieval.candidates.count` | Documents returned per retrieval |
-| `reranker.score.distribution` | Histogram of LLM relevance scores |
+| `ranker.score.distribution` | Histogram of LTR relevance scores |
 | `kafka.consumer.lag` | Per-topic consumer lag for autoscaling signals |
 
 ---
@@ -567,9 +449,8 @@ Because each stage is an independent Kafka consumer group, they scale independen
 
 ```mermaid
 flowchart LR
-    subgraph Heavy LLM Load
-        RR[reranker-service\nscale: 2–8 replicas]
-        AG[answer-generation-service\nscale: 1–6 replicas]
+    subgraph Heavy Ranking Load
+        RANK[ranker-service\nscale: 2–8 replicas]
     end
 
     subgraph High Throughput IO
@@ -592,6 +473,6 @@ Kubernetes manifests (Deployments, Services, HPAs) are maintained in:
 ## Future Enhancements
 
 - **Query routing** — orchestrator classifies query type (factual vs. conversational) and skips expansion for simple lookups
-- **Streaming answers** — stream `answer-generation-service` output back to the client via SSE instead of waiting for full completion
+- **Passage Highlighting** — return precise highlight snippets from the `ranker-service` directly to the client interface
 - **Session memory** — pass prior turns into `query-expansion-service` for multi-turn search context
-- **Evaluation harness** — offline NDCG / MRR scoring against labeled query sets to benchmark reranker quality across model upgrades
+- **Evaluation harness** — offline NDCG / MRR scoring against labeled query sets to benchmark ranker quality across model upgrades

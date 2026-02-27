@@ -14,7 +14,7 @@
 
 **Spring AI Search Engine** is a fully decomposed, event-driven microservices platform for AI-driven search. Every stage of the search pipeline runs as an **independent service** communicating exclusively over **Apache Kafka** — enabling each component to be scaled, deployed, and tuned in isolation.
 
-The pipeline covers the full journey from user intent to grounded LLM answers — inspired by real-world systems like LINE MAN Wongnai's search evolution from keyword matching to semantic, intent-aware retrieval.
+The pipeline covers the full journey from user intent to highly-relevant, context-aware ranked documents using a Learn to Rank (LTR) model. — inspired by real-world systems like LINE MAN Wongnai's search evolution from keyword matching to semantic, intent-aware retrieval.
 
 ---
 
@@ -34,8 +34,7 @@ flowchart TD
         ORCH[search-orchestrator<br>Pipeline Coordinator]
         QE[query-expansion-service<br>🧠 LLM Query Rewrite]
         HR[hybrid-retrieval-service<br>🔍 Vector + BM25 + RRF]
-        RR[reranker-service<br>🏆 LLM Reranker]
-        AG[answer-generation-service<br>✍️ RAG Answer]
+        RANK[ranker-service<br>🏆 LTR Ranker]
     end
 
     subgraph Background Ingestion
@@ -55,21 +54,17 @@ flowchart TD
     GW <-->|Route /search| ORCH
     GW -->|Route /ingest async| IS
 
-    ORCH <-->|topic: query.expand / expanded| QE
+    ORCH <-->|Kafka topic: query.expand / expanded| QE
     QE -.->|inference| OL
     
-    ORCH <-->|topic: retrieval.request / results| HR
-    HR <-->|vector search| MDB
+    ORCH <-->|Kafka topic: retrieval.request / results| HR
     HR <-->|keyword search| ES
+    HR <-->|vector search| MDB
     
-    ORCH <-->|topic: rerank.request / results| RR
-    RR -.->|inference| OL
-    
-    ORCH <-->|topic: answer.request / results| AG
-    AG -.->|inference| OL
+    ORCH <-->|Kafka topic: rank.request / results| RANK
 
-    IS -.->|embeddings| TEI
     IS --> MDB
+    IS -.->|embeddings| TEI
     MDB -->|source tailing| K
     K -->|index sink| ES
 ```
@@ -83,23 +78,19 @@ sequenceDiagram
     participant ORCH as search-orchestrator
     participant QE as query-expansion-service
     participant HR as hybrid-retrieval-service
-    participant RR as reranker-service
-    participant AG as answer-generation-service
+    participant RANK as ranker-service
 
     User->>GW: POST /search {query}
     GW->>ORCH: forwards request
 
-    ORCH->>QE: topic: query.expand
-    QE-->>ORCH: topic: query.expanded {variants[]}
+    ORCH->>QE: Kafka topic: query.expand
+    QE-->>ORCH: Kafka topic: query.expanded {variants[]}
 
-    GW->>HR: topic: retrieval.request {variants[]}
-    HR-->>GW: topic: retrieval.results {candidates[20]}
+    GW->>HR: Kafka topic: retrieval.request {variants[]}
+    HR-->>GW: Kafka topic: retrieval.results {candidates[20]}
 
-    GW->>RR: topic: rerank.request {query, candidates[20]}
-    RR-->>GW: topic: rerank.results {ranked[5]}
-
-    ORCH->>AG: topic: answer.request {query, ranked[5]}
-    AG-->>ORCH: topic: answer.results {answer, sources}
+    GW->>RANK: Kafka topic: rank.request {query, candidates[20]}
+    RANK-->>GW: Kafka topic: rank.results {ranked[5]}
 
     ORCH-->>GW: SearchResponse
     GW-->>User: SearchResponse
@@ -115,8 +106,7 @@ sequenceDiagram
 | `search-orchestrator` | Pipeline coordination, correlation tracking | `*.results` topics | `*.request` topics |
 | `query-expansion-service` | LLM rewrites query into 2–3 semantic variants | `query.expand` | `query.expanded` |
 | `hybrid-retrieval-service` | Dense vector + BM25 search, RRF merge | `retrieval.request` | `retrieval.results` |
-| `reranker-service` | LLM scores all candidates, returns top-5 | `rerank.request` | `rerank.results` |
-| `answer-generation-service` | RAG: LLM generates grounded answer from top-5 docs | `answer.request` | `answer.results` |
+| `ranker-service` | Ranks documents using a Learn to Rank (LTR) model and returns the definitive top-5 | `rank.request` | `rank.results` |
 | `ingestion-service` | Load, chunk, embed, insert to MongoDB | — | `mongo-documents` (via Source Connector) |
 
 ---
@@ -155,19 +145,12 @@ spring-ai-search-engine/
 │       ├── BM25SearchService.java        # Elasticsearch keyword search
 │       └── RRFMerger.java                # Reciprocal Rank Fusion
 │
-├── reranker-service/
+├── ranker-service/
 │   ├── kafka/
-│   │   ├── RerankRequestConsumer.java    # Listens: rerank.request
-│   │   └── RerankResultPublisher.java    # Publishes: rerank.results
+│   │   ├── RankRequestConsumer.java      # Listens: rank.request
+│   │   └── RankResultPublisher.java      # Publishes: rank.results
 │   └── service/
-│       └── LLMReranker.java              # LLM-only scoring (KEEP)
-│
-├── answer-generation-service/
-│   ├── kafka/
-│   │   ├── AnswerRequestConsumer.java    # Listens: answer.request
-│   │   └── AnswerResultPublisher.java    # Publishes: answer.results
-│   └── service/
-│       └── AnswerGenerationService.java  # RAG prompt + LLM call
+│       └── DocumentRanker.java           # LTR ranking model
 │
 ├── ingestion-service/
 │   ├── controller/
@@ -192,8 +175,8 @@ spring-ai-search-engine/
 │   │   ├── QueryExpandedEvent.java
 │   │   ├── RetrievalRequestEvent.java
 │   │   ├── RetrievalResultEvent.java
-│   │   ├── RerankRequestEvent.java
-│   │   ├── RerankResultEvent.java
+│   │   ├── RankRequestEvent.java
+│   │   ├── RankResultEvent.java
 │   │   ├── AnswerRequestEvent.java
 │   │   └── AnswerResultEvent.java
 │   ├── model/
@@ -214,12 +197,11 @@ spring-ai-search-engine/
 ## 🚀 Key Features
 
 - **⚡ Fully Event-Driven** — every pipeline stage communicates exclusively over Kafka; no synchronous HTTP between services
-- **📐 Independent Scalability** — scale `reranker-service` and `hybrid-retrieval-service` separately with their own HPAs
+- **📐 Independent Scalability** — scale `ranker-service` and `hybrid-retrieval-service` separately with their own HPAs
 - **🔗 Correlation Tracking** — orchestrator tracks each request end-to-end via a `correlationId` threaded through all Kafka events
 - **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, improving recall
 - **🔍 Hybrid Search** — MongoDB vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
-- **🏆 LLM Reranking** — LLM-only reranker scores all 20 candidates and returns top-5 (no separate cross-encoder model)
-- **✍️ Grounded Answers** — RAG generation grounded in top-5 reranked documents via Ollama
+- **🏆 Ranking Layer** — `ranker-service` accurately ranks documents using a Learn to Rank (LTR) model to return the definitive top-5
 - **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding via TEI sidecar are offloaded to background workers returning immediate `202 Accepted`. MongoDB Kafka Source Connectors automatically stream these embedded chunks to Elasticsearch without `outbox` application code.
 - **⚙️ Zero Magic Strings** — Fully centralized `.env` configuration via SpEL and `@Value` injections.
 - **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
@@ -290,8 +272,7 @@ mvn clean install
 java -jar ingestion-service/target/ingestion-service.jar
 java -jar query-expansion-service/target/query-expansion-service.jar
 java -jar hybrid-retrieval-service/target/hybrid-retrieval-service.jar
-java -jar reranker-service/target/reranker-service.jar
-java -jar answer-generation-service/target/answer-generation-service.jar
+java -jar ranker-service/target/ranker-service.jar
 java -jar search-orchestrator/target/search-orchestrator.jar
 ```
 
@@ -330,8 +311,7 @@ Recommended HPA targets:
 | Service | Scale Driver | Min Replicas | Max Replicas |
 |---|---|---|---|
 | `hybrid-retrieval-service` | CPU / Kafka consumer lag | 2 | 10 |
-| `reranker-service` | CPU / Kafka consumer lag | 2 | 8 |
-| `answer-generation-service` | CPU / Kafka consumer lag | 1 | 6 |
+| `ranker-service` | CPU / Kafka consumer lag | 2 | 8 |
 | `query-expansion-service` | CPU | 1 | 4 |
 | `search-orchestrator` | RPS | 2 | 8 |
 | `ingestion-service` | CPU / queue depth | 1 | 4 |
@@ -345,10 +325,9 @@ Recommended HPA targets:
 | 1 | Stabilize `ingestion-service` + MongoDB indexing end-to-end | ✅ In Progress |
 | 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | 🔲 Planned |
 | 3 | `hybrid-retrieval-service` — MongoDB + Elasticsearch + RRF | 🔲 Planned |
-| 4 | `reranker-service` — LLM scoring + fallback to RRF order | 🔲 Planned |
-| 5 | `answer-generation-service` — RAG generation | 🔲 Planned |
-| 6 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
-| 7 | Observability: per-stage tracing + Kafka lag dashboards | 🔲 Planned |
+| 4 | `ranker-service` — LTR model ranking | 🔲 Planned |
+| 5 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
+| 6 | Observability: per-stage tracing + Kafka lag dashboards | 🔲 Planned |
 
 ---
 
