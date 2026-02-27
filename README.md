@@ -46,6 +46,7 @@ flowchart TD
     HR <-->|keyword search| ES[(Elasticsearch)]
 
     QE & RR & AG <-->|inference| OL[[Ollama\nLLM Runtime]]
+    IS <-->|embeddings| TEI[[HuggingFace TEI\nSidecar]]
 
     IS[ingestion-service\nLoad · Chunk · Embed · Index] -->|topic: raw-docs| K[[Kafka]]
     K -->|embed sink| QD
@@ -206,7 +207,8 @@ spring-ai-search-engine/
 | Messaging | Apache Kafka |
 | Vector Store | Qdrant |
 | Keyword Search | Elasticsearch (BM25) |
-| LLM Provider | Ollama (local) |
+| Generative LLM | Ollama (local) |
+| Embedding API | HuggingFace TEI (Sidecar) |
 | Orchestration | Kubernetes (K8s) |
 | Observability | Micrometer + OpenTelemetry |
 
@@ -249,7 +251,7 @@ git checkout develop
 
 # 2. Start all infrastructure
 docker-compose up -d
-# Starts: Kafka, Qdrant, Elasticsearch, Ollama
+# Starts: Kafka, MongoDB, Elasticsearch, Ollama, API Gateway, and Ingestion Service (w/ TEI sidecar)
 
 # 3. Build all modules
 mvn clean install

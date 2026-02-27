@@ -38,6 +38,11 @@ flowchart TD
     ORCH -->|answer.request| S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
     S4 -->|answer.results| ORCH
 
+    %% Background Data Flow
+    Q_Doc([New Document]) -.-> INGEST["ingestion-service<br>Async Job / Outbox"]
+    INGEST -.->|vectorize| TEI[[HuggingFace TEI Sidecar<br>High-speed Embeddings]]
+    INGEST -.->|raw-docs| KAFKA[[Kafka]]
+    
     ORCH --> R([Final Response])
 ```
 
@@ -468,6 +473,14 @@ spring:
         options:
           model: llama3.2
           temperature: 0.0      # deterministic for expansion and reranking
+    
+    # HuggingFace TEI is used exclusively for vector embeddings
+    openai:
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:http://tei-sidecar:8080}
+      api-key: dummy_key_for_tei 
+      embedding:
+        options:
+          model: nomic-ai/nomic-embed-text-v1.5
 
 search:
   pipeline:
