@@ -24,37 +24,53 @@ The pipeline covers the full journey from user intent to grounded LLM answers �
 
 ```mermaid
 flowchart TD
-    U([User]) --> GW
+    U([User])
 
-    GW[api-gateway\nFront Door]
+    subgraph User Facing
+        GW[api-gateway<br>Front Door]
+    end
     
-    ORCH[search-orchestrator\nPipeline Coordinator]
+    subgraph Core Search Pipeline
+        ORCH[search-orchestrator<br>Pipeline Coordinator]
+        QE[query-expansion-service<br>🧠 LLM Query Rewrite]
+        HR[hybrid-retrieval-service<br>🔍 Vector + BM25 + RRF]
+        RR[reranker-service<br>🏆 LLM Reranker]
+        AG[answer-generation-service<br>✍️ RAG Answer]
+    end
 
-    GW -->|/search| ORCH
-    GW -->|/ingest| IS
+    subgraph Background Ingestion
+        IS[ingestion-service<br>Load · Chunk · Embed]
+    end
 
-    ORCH -->|topic: query.expand| QE[query-expansion-service\n🧠 LLM Query Rewrite]
-    QE -->|topic: query.expanded| GW
+    subgraph Infrastructure
+        MDB[(MongoDB)]
+        ES[(Elasticsearch)]
+        OL[[Ollama<br>LLM Runtime]]
+        TEI[[HuggingFace TEI<br>Sidecar]]
+        K[[Kafka Connectors]]
+    end
 
-    GW -->|topic: retrieval.request| HR[hybrid-retrieval-service\n🔍 Vector + BM25 + RRF]
-    HR -->|topic: retrieval.results| GW
+    U <-->|Search Request / Response| GW
 
-    GW -->|topic: rerank.request| RR[reranker-service\n🏆 LLM Reranker]
-    RR -->|topic: rerank.results| GW
+    GW <-->|Route /search| ORCH
+    GW -->|Route /ingest async| IS
 
-    ORCH -->|topic: answer.request| AG[answer-generation-service\n✍️ RAG Answer]
-    AG -->|topic: answer.results| ORCH
+    ORCH <-->|topic: query.expand / expanded| QE
+    QE -.->|inference| OL
+    
+    ORCH <-->|topic: retrieval.request / results| HR
+    HR <-->|vector search| MDB
+    HR <-->|keyword search| ES
+    
+    ORCH <-->|topic: rerank.request / results| RR
+    RR -.->|inference| OL
+    
+    ORCH <-->|topic: answer.request / results| AG
+    AG -.->|inference| OL
 
-    ORCH --> GW
-
-    HR <-->|vector search| MDB[(MongoDB)]
-    HR <-->|keyword search| ES[(Elasticsearch)]
-
-    QE & RR & AG <-->|inference| OL[[Ollama\nLLM Runtime]]
-    IS <-->|embeddings| TEI[[HuggingFace TEI\nSidecar]]
-
-    IS[ingestion-service\nLoad · Chunk · Embed] --> MDB
-    MDB -->|source tailing| K[[Kafka]]
+    IS -.->|embeddings| TEI
+    IS --> MDB
+    MDB -->|source tailing| K
     K -->|index sink| ES
 ```
 
@@ -157,15 +173,18 @@ spring-ai-search-engine/
 │   ├── controller/
 │   │   └── IngestionController.java      # POST /ingest (Returns 202 Accepted)
 │   ├── model/
-│   │   ├── IngestionMetadata.java        # Tracks Job status in MongoDB
-│   │   └── OutboxEvent.java              # Outbox pattern for reliable Kafka publishing
+│   │   └── IngestionMetadata.java        # Tracks Job status in MongoDB
 │   ├── service/
-│       ├── IngestionFacade.java          # Coordinates spooling & background worker
-│   │       ├── AsyncIngestionWorker.java     # @Async worker for extraction and embedding
-│   │       ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
-│   │       ├── ChunkingService.java          # TokenTextSplitter with overlaps
-│   │       └── EmbeddingService.java         # Spring AI EmbeddingClient (TEI) → MongoDB
-│   └── kafka/                              # Kafka Configurations
+│   │   ├── IngestionFacade.java          # Coordinates spooling & background worker
+│   │   ├── AsyncIngestionWorker.java     # @Async worker for extraction and embedding
+│   │   ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
+│   │   ├── ChunkingService.java          # TokenTextSplitter with overlaps
+│   │   ├── EmbeddingService.java         # Spring AI EmbeddingClient (TEI) → MongoDB
+│   │   └── KafkaConnectorRegistrationService.java  # Auto-registers source/sink connectors
+│   └── resources/
+│       └── connectors/
+│           ├── mongodb-source.json       # Kafka Connect Source config
+│           └── elasticsearch-sink.json   # Kafka Connect Sink config
 │
 ├── shared/                               # Shared library — models + events
 │   ├── event/

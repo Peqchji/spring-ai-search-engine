@@ -22,30 +22,52 @@ All three are decoupled from each other and from the retrieval layer — connect
 
 ```mermaid
 flowchart TD
-    Q([User Query]) --> ORCH
+    Q([User Query]) --> GW
 
-    ORCH[search-orchestrator<br>Pipeline Coordinator]
-    GW[api-gateway<br>Front Door] --> ORCH
+    subgraph User Facing
+        GW[api-gateway<br>Front Door]
+    end
 
-    ORCH -->|query.expand| S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
+    subgraph Core Search Pipeline
+        ORCH[search-orchestrator<br>Pipeline Coordinator]
+        S1["query-expansion-service<br>🧠 LLM Agent<br>Expand query into variants"]
+        S2["hybrid-retrieval-service<br>⚙️ Deterministic<br>Vector + BM25 + RRF"]
+        S3["reranker-service<br>🏆 LLM Agent — KEEP<br>Score candidates · return top-5"]
+        S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
+    end
+
+    subgraph Background Ingestion
+        INGEST["ingestion-service<br>Load · Embed · Input"]
+    end
+
+    subgraph Infrastructure
+        TEI[[HuggingFace TEI Sidecar<br>High-speed Embeddings]]
+        MDB[(MongoDB)]
+        KAFKADOCS[[Kafka raw-docs Topic]]
+        ES[(Elasticsearch Indexer)]
+    end
+
+    GW --> ORCH
+
+    ORCH -->|query.expand| S1
     S1 -->|query.expanded| ORCH
 
-    ORCH -->|retrieval.request| S2["hybrid-retrieval-service<br>⚙️ Deterministic<br>Vector + BM25 + RRF"]
+    ORCH -->|retrieval.request| S2
     S2 -->|retrieval.results| ORCH
 
-    ORCH -->|rerank.request| S3["reranker-service<br>🏆 LLM Agent — KEEP<br>Score candidates · return top-5"]
+    ORCH -->|rerank.request| S3
     S3 -->|rerank.results| ORCH
 
-    ORCH -->|answer.request| S4["answer-generation-service<br>✍️ LLM Agent<br>RAG generation"]
+    ORCH -->|answer.request| S4
     S4 -->|answer.results| ORCH
 
     %% Background Data Flow
-    Q_Doc([New Document]) -.-> INGEST["ingestion-service<br>Load · Embed · Input"]
-    INGEST -.->|vectorize| TEI[[HuggingFace TEI Sidecar<br>High-speed Embeddings]]
-    INGEST -.->|insert| MDB[(MongoDB)]
-    MDB -.->|Source Connector| KAFKADOCS[[Kafka raw-docs Topic]]
-    KAFKADOCS -.->|Sink Connector| ES[(Elasticsearch Indexer)]
-    
+    Q_Doc([New Document]) -.-> INGEST
+    INGEST -.->|vectorize| TEI
+    INGEST -.->|insert| MDB
+    MDB -.->|Source Connector| KAFKADOCS
+    KAFKADOCS -.->|Sink Connector| ES
+
     ORCH --> R([Final Response])
     GW --> R
 ```
