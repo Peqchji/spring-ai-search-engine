@@ -12,9 +12,9 @@
 
 ## 📖 Overview
 
-**Spring AI Search Engine** is a fully decomposed, event-driven microservices platform for AI-driven search. Every stage of the search pipeline runs as an **independent service** communicating exclusively over **Apache Kafka** — enabling each component to be scaled, deployed, and tuned in isolation.
+**Spring AI Search Engine** is a fully decomposed, event-driven microservices platform for **personalized, AI-driven search**. Every stage of the search pipeline runs as an **independent service** communicating exclusively over **Apache Kafka** — enabling each component to be scaled, deployed, and tuned in isolation.
 
-The pipeline covers the full journey from user intent to highly-relevant, context-aware ranked documents using a Learn to Rank (LTR) model. — inspired by real-world systems like LINE MAN Wongnai's search evolution from keyword matching to semantic, intent-aware retrieval.
+The pipeline covers the full journey from user intent to highly-relevant, **context-aware** ranked documents using a Learn to Rank (LTR) model — inspired by real-world systems like LINE MAN Wongnai's search evolution from keyword matching to semantic, intent-aware retrieval. A `UserContext` object (user history, location, preferences) is threaded through every pipeline stage, enabling each service to personalize its behavior.
 
 ---
 
@@ -42,33 +42,28 @@ flowchart TD
     end
 
     subgraph Infrastructure
-        MDB[(MongoDB)]
-        ES[(Elasticsearch)]
+        ES[(Elasticsearch<br>Vector + BM25 + RRF)]
         OL[[Ollama<br>LLM Runtime]]
         TEI[[HuggingFace TEI<br>Sidecar]]
-        K[[Kafka Connectors]]
-        REDIS[(Redis<br>State Store)]
+        REDIS[(Redis<br>State + User Profiles)]
     end
-    ORCH <-->|Read / Write state| REDIS
 
-    U <-->|Search Request / Response| GW
-
+    U <-->|Search Request + userContext| GW
     GW <-->|Route /search| ORCH
     GW -->|Route /ingest async| IS
 
-    ORCH <-->|Kafka topic: query.expand / expanded| QE
+    ORCH <-->|Read state / Enrich context| REDIS
+
+    ORCH <-->|Kafka: query.expand / expanded<br>+ userContext| QE
     QE -.->|inference| OL
     
-    ORCH <-->|Kafka topic: retrieval.request / results| HR
-    HR <-->|keyword search| ES
-    HR <-->|vector search| MDB
+    ORCH <-->|Kafka: retrieval.request / results<br>+ userContext| HR
+    HR <-->|vector + keyword search + RRF| ES
     
-    ORCH <-->|Kafka topic: rank.request / results| RANK
+    ORCH <-->|Kafka: rank.request / results<br>+ userContext| RANK
 
-    IS --> MDB
+    IS -->|embed + index| ES
     IS -.->|embeddings| TEI
-    MDB -->|source tailing| K
-    K -->|index sink| ES
 ```
 
 ### Kafka Topic Flow
@@ -82,17 +77,18 @@ sequenceDiagram
     participant HR as hybrid-retrieval-service
     participant RANK as ranker-service
 
-    User->>GW: POST /search {query}
+    User->>GW: POST /search {query, userContext}
     GW->>ORCH: forwards request
+    ORCH->>REDIS: enrich userContext (history, preferences)
 
-    ORCH->>QE: Kafka topic: query.expand
+    ORCH->>QE: Kafka topic: query.expand {query, userContext}
     QE-->>ORCH: Kafka topic: query.expanded {variants[]}
 
-    GW->>HR: Kafka topic: retrieval.request {variants[]}
-    HR-->>GW: Kafka topic: retrieval.results {candidates[20]}
+    ORCH->>HR: Kafka topic: retrieval.request {variants[], userContext}
+    HR-->>ORCH: Kafka topic: retrieval.results {candidates[20]}
 
-    GW->>RANK: Kafka topic: rank.request {query, candidates[20]}
-    RANK-->>GW: Kafka topic: rank.results {ranked[5]}
+    ORCH->>RANK: Kafka topic: rank.request {query, candidates[20], userContext}
+    RANK-->>ORCH: Kafka topic: rank.results {ranked[5]}
 
     ORCH-->>GW: SearchResponse
     GW-->>User: SearchResponse
@@ -102,14 +98,14 @@ sequenceDiagram
 
 ## 📦 Services
 
-| Service | Responsibility | Consumes | Produces |
-|---|---|---|---|
-| `api-gateway` | Edge proxy, routes incoming traffic | — | — |
-| `search-orchestrator` | Pipeline coordination, correlation tracking | `*.results` topics | `*.request` topics |
-| `query-expansion-service` | LLM rewrites query into 2–3 semantic variants | `query.expand` | `query.expanded` |
-| `hybrid-retrieval-service` | Dense vector + BM25 search, RRF merge | `retrieval.request` | `retrieval.results` |
-| `ranker-service` | Ranks documents using a Learn to Rank (LTR) model and returns the definitive top-5 | `rank.request` | `rank.results` |
-| `ingestion-service` | Load, chunk, embed, insert to MongoDB | — | `mongo-documents` (via Source Connector) |
+| Service | Responsibility | User Context Usage |
+|---|---|---|
+| `api-gateway` | Edge proxy, routes incoming traffic | Passes `userContext` through |
+| `search-orchestrator` | Pipeline coordination, enriches user context from Redis | Loads full user profile (history, preferences) from Redis |
+| `query-expansion-service` | LLM rewrites query into 2–3 semantic variants | Uses `recentSearches` + `preferences` for context-aware expansion |
+| `hybrid-retrieval-service` | Dense vector + BM25 search via Elasticsearch RRF | Uses `location` for geo-boosting, `preferences` for field boosting |
+| `ranker-service` | LTR model ranks and returns definitive top-5 | Uses full `userContext` as LTR feature signals |
+| `ingestion-service` | Load, chunk, embed, index into Elasticsearch | — |
 
 ---
 
@@ -143,9 +139,7 @@ spring-ai-search-engine/
 │   │   ├── RetrievalRequestConsumer.java # Listens: retrieval.request
 │   │   └── RetrievalResultPublisher.java # Publishes: retrieval.results
 │   └── service/
-│       ├── VectorSearchService.java      # MongoDB similarity search
-│       ├── BM25SearchService.java        # Elasticsearch keyword search
-│       └── RRFMerger.java                # Reciprocal Rank Fusion
+│       └── HybridSearchService.java      # ES knn + BM25 + RRF in a single query
 │
 ├── ranker-service/
 │   ├── kafka/
@@ -158,18 +152,15 @@ spring-ai-search-engine/
 │   ├── controller/
 │   │   └── IngestionController.java      # POST /ingest (Returns 202 Accepted)
 │   ├── model/
-│   │   └── IngestionMetadata.java        # Tracks Job status in MongoDB
+│   │   └── IngestionMetadata.java        # Tracks Job status in Elasticsearch
 │   ├── service/
 │   │   ├── IngestionFacade.java          # Coordinates spooling & background worker
 │   │   ├── AsyncIngestionWorker.java     # @Async worker for extraction and embedding
 │   │   ├── TempFileCleanupTask.java      # Scheduled OS temp file cleanup
 │   │   ├── ChunkingService.java          # TokenTextSplitter with overlaps
-│   │   ├── EmbeddingService.java         # Spring AI EmbeddingClient (TEI) → MongoDB
-│   │   └── KafkaConnectorRegistrationService.java  # Auto-registers source/sink connectors
+│   │   └── EmbeddingService.java         # Spring AI EmbeddingClient (TEI) → Elasticsearch
 │   └── resources/
-│       └── connectors/
-│           ├── mongodb-source.json       # Kafka Connect Source config
-│           └── elasticsearch-sink.json   # Kafka Connect Sink config
+│       └── application.yml
 │
 ├── shared/                               # Shared library — models + events
 │   ├── event/
@@ -184,7 +175,9 @@ spring-ai-search-engine/
 │   ├── model/
 │   │   ├── SearchRequest.java
 │   │   ├── SearchResponse.java
-│   │   └── RankedDocument.java
+│   │   ├── RankedDocument.java
+│   │   ├── UserContext.java              # userId, location, preferences, recentSearches
+│   │   └── GeoLocation.java             # lat/lon for proximity boosting
 │   └── util/
 │       └── CorrelationIdGenerator.java
 │
@@ -199,12 +192,13 @@ spring-ai-search-engine/
 ## 🚀 Key Features
 
 - **⚡ Fully Event-Driven** — every pipeline stage communicates exclusively over Kafka; no synchronous HTTP between services
+- **👤 Personalized Search** — `UserContext` (history, location, preferences) is threaded through every pipeline stage for context-aware expansion, geo-boosted retrieval, and personalized ranking
 - **📐 Independent Scalability** — scale `ranker-service` and `hybrid-retrieval-service` separately with their own HPAs
 - **🔗 Correlation Tracking** — orchestrator tracks each request end-to-end via a `correlationId` threaded through all Kafka events
-- **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, improving recall
-- **🔍 Hybrid Search** — MongoDB vector search + Elasticsearch BM25 merged via Reciprocal Rank Fusion (RRF)
-- **🏆 Ranking Layer** — `ranker-service` accurately ranks documents using a Learn to Rank (LTR) model to return the definitive top-5
-- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding via TEI sidecar are offloaded to background workers returning immediate `202 Accepted`. MongoDB Kafka Source Connectors automatically stream these embedded chunks to Elasticsearch without `outbox` application code.
+- **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, using user history and preferences for better context
+- **🔍 Hybrid Search** — Elasticsearch dense vector (`knn`) + BM25 keyword search merged via built-in Reciprocal Rank Fusion (RRF) in a single query, with geo-proximity and preference boosting
+- **🏆 Ranking Layer** — `ranker-service` accurately ranks documents using a Learn to Rank (LTR) model with user context features to return the definitive top-5
+- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding via TEI sidecar are offloaded to background workers returning immediate `202 Accepted`. Embeddings are written directly to Elasticsearch via Spring AI `ElasticsearchVectorStore`.
 - **⚙️ Zero Magic Strings** — Fully centralized `.env` configuration via SpEL and `@Value` injections.
 - **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
 - **📊 Observability** — per-stage latency (Micrometer) and distributed tracing (OpenTelemetry)
@@ -218,8 +212,7 @@ spring-ai-search-engine/
 | Language | Java 21 |
 | Framework | Spring Boot 3.3+, Spring AI 1.0 |
 | Messaging | Apache Kafka |
-| Vector Store | MongoDB |
-| Keyword Search | Elasticsearch (BM25) |
+| Vector + Keyword Search | Elasticsearch (knn + BM25 + RRF) |
 | Generative LLM | Ollama (local) |
 | Embedding API | HuggingFace TEI (Sidecar) |
 | Orchestration | Kubernetes (K8s) |
@@ -242,17 +235,12 @@ spring-ai-search-engine/
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2
 
-# MongoDB Vector Store
-SPRING_DATA_MONGODB_URI=mongodb://localhost:27017/ingestion-db
-SPRING_AI_VECTORSTORE_MONGODB_COLLECTION_NAME=documents
-SPRING_AI_VECTORSTORE_MONGODB_PATH_NAME=embedding
-SPRING_AI_VECTORSTORE_MONGODB_INDEX_NAME=vector_index
+# Elasticsearch (Vector + Keyword + RRF)
+SPRING_ELASTICSEARCH_URIS=http://localhost:9200
+SPRING_AI_VECTORSTORE_ELASTICSEARCH_INDEX_NAME=document_chunks
 
 # Kafka
 SPRING_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-
-# Elasticsearch
-ELASTICSEARCH_URL=http://localhost:9200
 ```
 
 ### Local Development
@@ -265,7 +253,7 @@ git checkout develop
 
 # 2. Start all infrastructure
 docker-compose up -d
-# Starts: Kafka, MongoDB, Elasticsearch, Ollama, API Gateway, and Ingestion Service (w/ TEI sidecar)
+# Starts: Kafka, Elasticsearch, Ollama, API Gateway, and Ingestion Service (w/ TEI sidecar)
 
 # 3. Build all modules
 mvn clean install
@@ -286,10 +274,18 @@ java -jar search-orchestrator/target/search-orchestrator.jar
 curl -X POST http://localhost:8080/ingest \
   -F "file=@/path/to/document.pdf"
 
-# Search
+# Search (with user context for personalized results)
 curl -X POST http://localhost:8080/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "What is the refund policy?"}'
+  -d '{
+    "query": "What is the refund policy?",
+    "userContext": {
+      "userId": "user-123",
+      "location": { "lat": 13.7563, "lon": 100.5018 },
+      "preferences": ["electronics", "warranty"],
+      "recentSearches": ["return laptop", "shipping damage"]
+    }
+  }'
 ```
 
 ---
@@ -304,7 +300,7 @@ git clone -b spring-ai-search-engine https://github.com/Peqchji/k8s-lab.git
 cd k8s-lab
 
 kubectl apply -f namespace.yaml
-kubectl apply -f infra/    # Kafka, MongoDB, Elasticsearch, Ollama
+kubectl apply -f infra/    # Kafka, Elasticsearch, Ollama
 kubectl apply -f apps/     # All 6 services
 ```
 
@@ -324,9 +320,9 @@ Recommended HPA targets:
 
 | Phase | Goal | Status |
 |---|---|---|
-| 1 | Stabilize `ingestion-service` + MongoDB indexing end-to-end | ✅ In Progress |
+| 1 | Stabilize `ingestion-service` + Elasticsearch indexing end-to-end | ✅ In Progress |
 | 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | 🔲 Planned |
-| 3 | `hybrid-retrieval-service` — MongoDB + Elasticsearch + RRF | 🔲 Planned |
+| 3 | `hybrid-retrieval-service` — Elasticsearch knn + BM25 + RRF | 🔲 Planned |
 | 4 | `ranker-service` — LTR model ranking | 🔲 Planned |
 | 5 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
 | 6 | Observability: per-stage tracing + Kafka lag dashboards | 🔲 Planned |
