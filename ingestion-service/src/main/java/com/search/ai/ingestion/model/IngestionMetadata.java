@@ -5,7 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
-import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.elasticsearch.annotations.Document;
 import com.search.ai.shared.util.constants.AppConstants;
 
 import java.time.LocalDateTime;
@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Document(collection = AppConstants.SPEL_COLLECTION_INGESTIONS)
+@Document(indexName = AppConstants.SPEL_INDEX_INGESTION_METADATA)
 public class IngestionMetadata {
     @Id
     private String id;

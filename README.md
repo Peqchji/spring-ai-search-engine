@@ -197,8 +197,8 @@ spring-ai-search-engine/
 - **🔗 Correlation Tracking** — orchestrator tracks each request end-to-end via a `correlationId` threaded through all Kafka events
 - **🧠 Query Expansion** — LLM rewrites ambiguous queries into multiple variants before retrieval, using user history and preferences for better context
 - **🔍 Hybrid Search** — Elasticsearch dense vector (`knn`) + BM25 keyword search merged via built-in Reciprocal Rank Fusion (RRF) in a single query, with geo-proximity and preference boosting
-- **🏆 Ranking Layer** — `ranker-service` accurately ranks documents using a Learn to Rank (LTR) model with user context features to return the definitive top-5
-- **🌬️ Asynchronous Ingestion** — Heavy parsing and embedding via TEI sidecar are offloaded to background workers returning immediate `202 Accepted`. Embeddings are written directly to Elasticsearch via Spring AI `ElasticsearchVectorStore`.
+- **🏆 Ranking Layer** — `ranker-service` accurately ranks documents using a Learn to Rank (LTR) model to return the definitive top-5. Implements **Claim Check pattern** where search results return only IDs and summaries to keep Kafka messages lean and API responses fast.
+- **📄 Full Document Retrieval** — Dedicated endpoint to fetch the complete document content by ID after identifying relevant candidates.
 - **⚙️ Zero Magic Strings** — Fully centralized `.env` configuration via SpEL and `@Value` injections.
 - **🐳 Kubernetes Native** — one Deployment + HPA per service for targeted autoscaling
 - **📊 Observability** — per-stage latency (Micrometer) and distributed tracing (OpenTelemetry)
@@ -275,6 +275,7 @@ curl -X POST http://localhost:8080/ingest \
   -F "file=@/path/to/document.pdf"
 
 # Search (with user context for personalized results)
+# Returns summaries for fast processing (Claim Check Pattern)
 curl -X POST http://localhost:8080/search \
   -H "Content-Type: application/json" \
   -d '{
@@ -286,6 +287,9 @@ curl -X POST http://localhost:8080/search \
       "recentSearches": ["return laptop", "shipping damage"]
     }
   }'
+
+# Get Full Document Detail
+curl -X GET http://localhost:8080/documents/doc-uuid-1
 ```
 
 ---

@@ -93,7 +93,7 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 {
   "correlationId": "uuid",
   "originalQuery": "can I get money back",
-  "variants": ["can I get money back", "refund policy for electronics", "return and reimbursement process"]
+  "variants": ["refund policy", "reimbursement process"]
 }
 ```
 
@@ -113,8 +113,8 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 {
   "correlationId": "uuid",
   "candidates": [
-    { "id": "doc-uuid", "content": "...", "score": 0.91, "source": "rrf" },
-    { "id": "doc-uuid", "content": "...", "score": 0.87, "source": "rrf" }
+    { "id": "doc-uuid-1", "score": 0.91, "source": "rrf" },
+    { "id": "doc-uuid-2", "score": 0.87, "source": "rrf" }
   ]
 }
 ```
@@ -134,8 +134,8 @@ All events carry a `correlationId` so the orchestrator can match responses back 
 {
   "correlationId": "uuid",
   "ranked": [
-    { "id": "doc-uuid", "content": "...", "score": 9.2 },
-    { "id": "doc-uuid", "content": "...", "score": 7.8 }
+    { "id": "doc-uuid-1", "score": 9.2 },
+    { "id": "doc-uuid-2", "score": 7.8 }
   ]
 }
 ```
@@ -170,7 +170,7 @@ stateDiagram-v2
     FAILED --> [*]
 ```
 
-### Implementation
+### Implementation (Claim Check & Response)
 
 ```java
 @Service
@@ -192,7 +192,19 @@ public class PipelineOrchestrator {
         return future;
     }
 
-    // Called by ResultConsumer when each topic result arrives
+    // New Endpoint for Full Document Retrieval (Claim Check)
+    @GetMapping("/documents/{id}")
+    public DocumentDetail getDocument(String id) {
+        return documentService.findById(id); 
+    }
+
+    // Called by ResultConsumer when retrieval results arrive
+    public void onRetrievalResults(RetrievalResultEvent event) {
+        // IDs only - ranker will fetch its own content from ES
+        publisher.publish("rank.request", new RankRequestEvent(
+            event.correlationId(), state.query(), event.candidates(), state.userContext()
+        ));
+    }
     public void onQueryExpanded(QueryExpandedEvent event) {
         PipelineState state = stateStore.get(event.correlationId());
         // Update state in Redis
@@ -407,12 +419,12 @@ public void consume(RankRequestEvent event) {
 }
 ```
 
-### Output Model
+### Output Model (Personalized & Summarized)
 
 ```java
 public record RankedDocument(
     String id,
-    String content,
+    String summary,      // 2-3 line snippet for fast transmission
     Map<String, Object> metadata,
     double score
 ) {}

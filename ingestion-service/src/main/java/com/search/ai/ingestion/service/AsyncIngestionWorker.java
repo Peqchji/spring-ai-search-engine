@@ -25,9 +25,6 @@ public class AsyncIngestionWorker {
     private final EmbeddingService embeddingService;
     private final IngestionMetadataRepository metadataRepository;
 
-    @Value(AppConstants.PROP_EVENT_INGESTION_COMPLETED)
-    private String eventTypeIngestionCompleted;
-
     @Async
     public void processIngestion(String metadataId, Path filePath, String originalFilename) {
         log.info("Starting background ingestion for trace id: {}", metadataId);
@@ -45,9 +42,9 @@ public class AsyncIngestionWorker {
             // 2. Chunk — split into overlapping chunks
             List<Document> chunks = chunkingService.chunk(documents);
 
-            // 3. Embed + Store — generate embeddings and store in MongoDB via Spring AI
+            // 3. Embed + Store — generate embeddings and store in Elasticsearch via Spring AI
             embeddingService.embedAndStore(chunks);
-            log.info("Embedded and stored {} chunk(s) in MongoDB", chunks.size());
+            log.info("Embedded and stored {} chunk(s) in Elasticsearch", chunks.size());
 
             // 4. Persistence — Update metadata to COMPLETED
             metadata.setDocumentCount(documents.size());
