@@ -3,12 +3,10 @@ package com.search.ai.ingestion.service;
 import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
-import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.shared.constant.APIMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
