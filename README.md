@@ -324,11 +324,11 @@ Recommended HPA targets:
 
 | Phase | Goal | Status |
 |---|---|---|
-| 1 | Stabilize `ingestion-service` + Elasticsearch indexing end-to-end | ✅ In Progress |
-| 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | 🔲 Planned |
-| 3 | `hybrid-retrieval-service` — Elasticsearch knn + BM25 + RRF | 🔲 Planned |
-| 4 | `ranker-service` — LTR model ranking | 🔲 Planned |
-| 5 | `search-orchestrator` — correlationId state machine | 🔲 Planned |
+| 1 | Stabilize `ingestion-service` + Elasticsearch indexing end-to-end | ✅ Done |
+| 2 | `query-expansion-service` — Kafka consumer/producer + LLM prompt | ✅ Done |
+| 3 | `hybrid-retrieval-service` — Elasticsearch knn + BM25 + RRF | ✅ Done |
+| 4 | `ranker-service` — LTR model ranking | ✅ Done |
+| 5 | `search-orchestrator` — correlationId state machine | ✅ Done |
 | 6 | Observability: per-stage tracing + Kafka lag dashboards | 🔲 Planned |
 
 ---
