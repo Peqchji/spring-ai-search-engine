@@ -29,6 +29,9 @@
         <module>api-gateway</module>
         <module>ingestion-service</module>
         <module>search-orchestrator</module>
+        <module>query-expansion-service</module>
+        <module>hybrid-retrieval-service</module>
+        <module>ranker-service</module>
     </modules>
 
     <dependencyManagement>
