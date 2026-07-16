@@ -3,12 +3,10 @@ package com.search.ai.ingestion.service;
 import com.search.ai.ingestion.model.IngestionMetadata;
 import com.search.ai.ingestion.model.IngestionStatus;
 import com.search.ai.ingestion.repository.IngestionMetadataRepository;
-import com.search.ai.shared.util.constants.AppConstants;
 import com.search.ai.shared.constant.APIMessages;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -24,9 +22,6 @@ public class AsyncIngestionWorker {
     private final ChunkingService chunkingService;
     private final EmbeddingService embeddingService;
     private final IngestionMetadataRepository metadataRepository;
-
-    @Value(AppConstants.PROP_EVENT_INGESTION_COMPLETED)
-    private String eventTypeIngestionCompleted;
 
     @Async
     public void processIngestion(String metadataId, Path filePath, String originalFilename) {
@@ -45,9 +40,9 @@ public class AsyncIngestionWorker {
             // 2. Chunk — split into overlapping chunks
             List<Document> chunks = chunkingService.chunk(documents);
 
-            // 3. Embed + Store — generate embeddings and store in MongoDB via Spring AI
+            // 3. Embed + Store — generate embeddings and store in Elasticsearch via Spring AI
             embeddingService.embedAndStore(chunks);
-            log.info("Embedded and stored {} chunk(s) in MongoDB", chunks.size());
+            log.info("Embedded and stored {} chunk(s) in Elasticsearch", chunks.size());
 
             // 4. Persistence — Update metadata to COMPLETED
             metadata.setDocumentCount(documents.size());

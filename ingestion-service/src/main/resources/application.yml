@@ -17,13 +17,11 @@ spring:
     virtual:
       enabled: true
 
-  data:
-    mongodb:
-      uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/ingestion-db}
-    elasticsearch:
-      uris: ${SPRING_ELASTICSEARCH_URIS:http://localhost:9200}
+  # Elasticsearch
+  elasticsearch:
+    uris: ${SPRING_ELASTICSEARCH_URIS:http://localhost:9200}
 
-  # Spring AI — OpenAI (embedding model)
+  # Spring AI — OpenAI-compatible embedding model (TEI sidecar)
   ai:
     openai:
       api-key: ${SPRING_AI_OPENAI_API_KEY:dummy_key_for_tei}
@@ -32,12 +30,12 @@ spring:
         options:
           model: ${SPRING_AI_OPENAI_EMBEDDING_OPTIONS_MODEL:nomic-ai/nomic-embed-text-v1.5}
 
-    # Spring AI — MongoDB vector store
+    # Spring AI — Elasticsearch vector store (replaces MongoDB)
     vectorstore:
-      mongodb:
-        collection-name: ${SPRING_AI_VECTORSTORE_MONGODB_COLLECTION_NAME:documents}
-        path-name: ${SPRING_AI_VECTORSTORE_MONGODB_PATH_NAME:embedding}
-        index-name: ${SPRING_AI_VECTORSTORE_MONGODB_INDEX_NAME:vector_index}
+      elasticsearch:
+        index-name: ${SPRING_AI_VECTORSTORE_ELASTICSEARCH_INDEX_NAME:document_chunks}
+        dimensions: 768
+        similarity: cosine
 
 
 server:

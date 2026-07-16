@@ -4,7 +4,7 @@ import java.util.Map;
 
 public record RankedDocument(
                 String id,
-                String content,
+                String summary,
                 Map<String, Object> metadata,
                 double score) {
 }
