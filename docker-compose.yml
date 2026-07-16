@@ -119,6 +119,36 @@ services:
     depends_on:
       ingestion-service:
         condition: service_healthy
+      search-orchestrator:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  search-orchestrator:
+    build:
+      context: .
+      dockerfile: search-orchestrator/Dockerfile
+    container_name: search-orchestrator
+    ports:
+      - "${ORCHESTRATOR_PORT:-8081}:8081"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
     mem_limit: 512m
     cpus: 0.5
@@ -165,6 +195,60 @@ services:
     restart: unless-stopped
     mem_limit: 4g
     cpus: 2.0
+
+  query-expansion-service:
+    build:
+      context: .
+      dockerfile: query-expansion-service/Dockerfile
+    container_name: query-expansion-service
+    ports:
+      - "${EXPANSION_PORT:-8082}:8082"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  hybrid-retrieval-service:
+    build:
+      context: .
+      dockerfile: hybrid-retrieval-service/Dockerfile
+    container_name: hybrid-retrieval-service
+    ports:
+      - "${RETRIEVAL_PORT:-8083}:8083"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+
+  ranker-service:
+    build:
+      context: .
+      dockerfile: ranker-service/Dockerfile
+    container_name: ranker-service
+    ports:
+      - "${RANKER_PORT:-8084}:8084"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
 
 volumes:
   es-data:

@@ -14,10 +14,13 @@ public final class TopicConstants {
     
     public static final String RANK_REQUEST = "rank.request";
     public static final String RANK_RESULTS = "rank.results";
+    
+    public static final String PIPELINE_FAILURE = "pipeline.failure";
 
     // ── Property Placeholders for @KafkaListener (No Magic Strings) ──
     public static final String PROP_TOPIC_QUERY_EXPANDED = "${search.pipeline.topics.query-expanded:" + QUERY_EXPANDED + "}";
     public static final String PROP_TOPIC_RETRIEVAL_RESULTS = "${search.pipeline.topics.retrieval-results:" + RETRIEVAL_RESULTS + "}";
     public static final String PROP_TOPIC_RANK_RESULTS = "${search.pipeline.topics.rank-results:" + RANK_RESULTS + "}";
+    public static final String PROP_TOPIC_PIPELINE_FAILURE = "${search.pipeline.topics.pipeline-failure:" + PIPELINE_FAILURE + "}";
 
 }
